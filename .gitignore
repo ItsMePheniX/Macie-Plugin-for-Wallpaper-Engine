@@ -1,34 +1,85 @@
-
 PROBLEMS_AND_SOLUTIONS.md
-# Prerequisites
-*.d
-# Compiled Object files
+# CMake Build System
+build/
+cmake_build_*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+*.cmake
+
+# Compiled Object Files
 *.slo
 *.lo
 *.o
 *.obj
+*.d
+
 # Precompiled Headers
 *.gch
 *.pch
-# Linker files
+
+# Linker Files
 *.ilk
+
 # Debugger Files
 *.pdb
-# Compiled Dynamic libraries
+*.dwo
+
+# Compiled Dynamic Libraries
 *.so
 *.dylib
 *.dll
-# Fortran module files
-*.mod
-*.smod
-# Compiled Static libraries
+
+# Compiled Static Libraries
 *.lai
 *.la
 *.a
 *.lib
+
 # Executables
 *.exe
 *.out
 *.app
-# debug information files
-*.dwo
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+*.xcarchive
+*.xctimeline
+*.playground
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Application Bundles
+*.app/
+*.dSYM/
+
+# Temporary & Log Files
+*.log
+*.tmp
+*.temp
+*.cache
+PROBLEMS_AND_SOLUTIONS.md
+
+# Dependencies
+conan/
+node_modules/
+
+# Environment
+.env
+.env.local
