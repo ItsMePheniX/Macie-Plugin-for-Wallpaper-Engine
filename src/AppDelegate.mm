@@ -1,13 +1,18 @@
 //
-//  AppDelegate.m
-//  MacieWallpaper
+//  AppDelegate.mm
+//  MacieWallpaper - Application Delegate
 //
 //  Created on 2026-02-14.
 //
 
 #import "AppDelegate.h"
 #import "MainWindowController.h"
+#import "WelcomeWindowController.h"
+#import "PreferencesWindowController.h"
+#import "PerformanceMonitor.h"
+#import "ThumbnailCache.h"
 #import "AssetManager.hpp"
+#import "Constants.h"
 #import <vector>
 
 @implementation AppDelegate
@@ -17,24 +22,49 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    NSLog(@"MacieWallpaper Started");
-    NSLog(@"macOS Version: %@", [[NSProcessInfo processInfo] operatingSystemVersionString]);
-    NSLog(@"");
+    NSLog(@"MacieWallpaper Started (macOS %@)", [[NSProcessInfo processInfo] operatingSystemVersionString]);
     
     self.assetManager = new Macie::AssetManager();
+    
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *savedPath = [defaults stringForKey:@"steamappsPath"];
+    
+    if (!savedPath || ![[NSFileManager defaultManager] fileExistsAtPath:savedPath]) {
+        NSLog(@"No valid steamapps path found. Showing welcome window...");
+        
+        WelcomeWindowController *welcomeController = [[WelcomeWindowController alloc] initWithCompletionHandler:^(NSString *selectedPath) {
+            NSLog(@"User selected path: %@", selectedPath);
+            [self scanWallpaperEngineVideos];
+            [self createDesktopWindow];
+            [self playFirstAvailableVideo];
+            [self setupMenuBar];
+            [self setupPerformanceMonitor];
+        }];
+        
+        [welcomeController showWindow:nil];
+        return;
+    }
+    
     [self scanWallpaperEngineVideos];
     [self createDesktopWindow];
     [self playFirstAvailableVideo];
+    [self setupMenuBar];
+    [self setupPerformanceMonitor];
 }
 
 - (void)scanWallpaperEngineVideos {
-    NSLog(@"Scanning for Wallpaper Engine videos...");
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *steamappsPath = [defaults stringForKey:@"steamappsPath"];
     
-    std::string steamappsPath = "/Users/macie/steamapps";
-    std::vector<Macie::WallpaperProject> wallpapers = [self assetManagerCpp]->scanWallpaperEngine(steamappsPath);
+    if (!steamappsPath) {
+        NSLog(@"ERROR: No steamapps path configured");
+        return;
+    }
+    
+    std::string pathString = [steamappsPath UTF8String];
+    std::vector<Macie::WallpaperProject> wallpapers = [self assetManagerCpp]->scanWallpaperEngine(pathString);
     
     NSLog(@"Found %lu video wallpapers", wallpapers.size());
-    NSLog(@"");
 }
 
 - (void)createDesktopWindow {
@@ -58,11 +88,6 @@
     self.desktopWindow.ignoresMouseEvents = YES;
     [self.desktopWindow orderBack:nil];
     
-    NSLog(@"Desktop window created");
-    NSLog(@"  Window Level: %ld", (long)self.desktopWindow.level);
-    NSLog(@"  Frame: %@", NSStringFromRect(self.desktopWindow.frame));
-    NSLog(@"");
-    
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(screenParametersChanged:)
                                                  name:NSApplicationDidChangeScreenParametersNotification
@@ -73,8 +98,10 @@
     std::vector<Macie::WallpaperProject> wallpapers = [self assetManagerCpp]->getVideoWallpapers();
     
     if (wallpapers.empty()) {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSString *steamPath = [defaults stringForKey:@"steamappsPath"];
         NSLog(@"WARNING: No video wallpapers found");
-        NSLog(@"  Check path: /Users/macie/steamapps/workshop/content/431960/");
+        NSLog(@"  Check path: %@/workshop/content/431960/", steamPath ?: @"(not configured)");
         return;
     }
     
@@ -83,21 +110,24 @@
     NSString *title = [NSString stringWithUTF8String:firstVideo.title.c_str()];
     
     NSLog(@"Loading wallpaper: %@", title);
-    NSLog(@"  Path: %@", videoPath);
     
     self.videoRenderer = [[AVVideoRenderer alloc] initWithWindow:self.desktopWindow];
     BOOL success = [self.videoRenderer loadAndPlayVideo:videoPath];
     
     if (success) {
-        NSLog(@"Video wallpaper is now playing");
-        NSLog(@"");
-        NSLog(@"TIP: Desktop icons should still be clickable. Press Cmd+Q to quit.");
+        // Restore mute state from previous session
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        BOOL hasStoredState = [defaults objectForKey:@"lastMuteState"] != nil;
+        BOOL lastMuteState = hasStoredState ? [defaults boolForKey:@"lastMuteState"] : YES;
+        
+        if (!lastMuteState) {
+            [self.videoRenderer unmute];
+        }
+        
         [self showGallery];
     } else {
         NSLog(@"ERROR: Failed to load video wallpaper");
     }
-    
-    NSLog(@"");
 }
 
 - (void)showGallery {
@@ -107,17 +137,50 @@
     }
     [self.galleryController showWindow:nil];
     [self.galleryController.window makeKeyAndOrderFront:nil];
-    NSLog(@"Gallery window opened");
+}
+
+- (void)setupPerformanceMonitor {
+    self.performanceMonitor = [[PerformanceMonitor alloc] init];
+    self.performanceMonitor.delegate = self;
+    [self.performanceMonitor startMonitoring];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(performanceSettingsChanged:)
+                                                 name:@"PerformanceSettingsChanged"
+                                               object:nil];
+}
+
+- (void)performanceSettingsChanged:(NSNotification *)notification {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    self.performanceMonitor.pauseOnBattery = [defaults boolForKey:kDefaultsPauseOnBattery];
+    self.performanceMonitor.pauseOnFullscreen = [defaults boolForKey:kDefaultsPauseOnFullscreen];
+    [self.performanceMonitor evaluatePlaybackState];
+}
+
+#pragma mark - PerformanceMonitorDelegate
+
+- (void)performanceMonitorShouldPausePlayback:(BOOL)shouldPause reason:(NSString *)reason {
+    if (shouldPause) {
+        [self.videoRenderer pause];
+    } else {
+        [self.videoRenderer play];
+    }
 }
 
 - (void)screenParametersChanged:(NSNotification *)notification {
-    NSLog(@"Screen parameters changed - restoring window level");
     self.desktopWindow.level = kCGDesktopWindowLevel - 1;
     [self.desktopWindow orderBack:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {
-    NSLog(@"MacieWallpaper Terminating");
+    // Stop performance monitoring
+    if (self.performanceMonitor) {
+        [self.performanceMonitor stopMonitoring];
+        self.performanceMonitor = nil;
+    }
+    
+    // Remove notification observers
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     
     if (self.videoRenderer) {
         [self.videoRenderer stop];
@@ -137,6 +200,119 @@
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     return NO;
+}
+
+- (BOOL)selectSteamappsFolder {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.title = @"Select Steamapps Folder";
+    panel.message = @"Please locate your steamapps folder (usually in Steam installation directory)";
+    panel.prompt = @"Select";
+    panel.canChooseDirectories = YES;
+    panel.canChooseFiles = NO;
+    panel.allowsMultipleSelection = NO;
+    panel.canCreateDirectories = NO;
+    
+    if ([panel runModal] == NSModalResponseOK) {
+        NSURL *selectedURL = panel.URL;
+        NSString *selectedPath = selectedURL.path;
+        
+        NSString *workshopPath = [selectedPath stringByAppendingPathComponent:@"workshop/content/431960"];
+        BOOL isDirectory;
+        BOOL workshopExists = [[NSFileManager defaultManager] fileExistsAtPath:workshopPath isDirectory:&isDirectory];
+        
+        if (!workshopExists || !isDirectory) {
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = @"Invalid Folder";
+            alert.informativeText = @"Selected folder does not contain Wallpaper Engine workshop content.\n\nPlease select the 'steamapps' folder that contains: workshop/content/431960/";
+            alert.alertStyle = NSAlertStyleWarning;
+            [alert addButtonWithTitle:@"Try Again"];
+            [alert addButtonWithTitle:@"Cancel"];
+            
+            NSModalResponse response = [alert runModal];
+            if (response == NSAlertFirstButtonReturn) {
+                return [self selectSteamappsFolder];
+            }
+            return NO;
+        }
+        
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setObject:selectedPath forKey:@"steamappsPath"];
+        [defaults synchronize];
+        
+        return YES;
+    }
+    
+    return NO;
+}
+
+- (void)changeSteamappsLocation:(id)sender {
+    if ([self selectSteamappsFolder]) {
+        delete [self assetManagerCpp];
+        self.assetManager = new Macie::AssetManager();
+        
+        [self scanWallpaperEngineVideos];
+        
+        if (self.galleryController) {
+            [self.galleryController.window close];
+            self.galleryController = nil;
+        }
+        
+        [self playFirstAvailableVideo];
+    }
+}
+
+- (void)setupMenuBar {
+    NSMenu *mainMenu = [NSApp mainMenu];
+    if (!mainMenu) {
+        mainMenu = [[NSMenu alloc] init];
+        [NSApp setMainMenu:mainMenu];
+    }
+    
+    NSMenu *appMenu = [[NSMenu alloc] init];
+    NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
+    [appMenuItem setSubmenu:appMenu];
+    
+    [appMenu addItemWithTitle:@"Preferences..." 
+                       action:@selector(showPreferences:) 
+                keyEquivalent:@","];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Change Wallpaper Location..." 
+                       action:@selector(changeSteamappsLocation:) 
+                keyEquivalent:@"l"];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Quit" 
+                       action:@selector(terminate:) 
+                keyEquivalent:@"q"];
+    
+    [mainMenu insertItem:appMenuItem atIndex:0];
+}
+
+- (void)showPreferences:(id)sender {
+    if (!self.preferencesController) {
+        self.preferencesController = [[PreferencesWindowController alloc] init];
+        
+        __weak typeof(self) weakSelf = self;
+        self.preferencesController.onPathChanged = ^{
+            [weakSelf reloadWallpapers];
+        };
+    }
+    
+    [self.preferencesController showWindow:nil];
+    [self.preferencesController.window makeKeyAndOrderFront:nil];
+}
+
+- (void)reloadWallpapers {
+    delete [self assetManagerCpp];
+    self.assetManager = new Macie::AssetManager();
+    
+    [self scanWallpaperEngineVideos];
+    
+    if (self.galleryController) {
+        [self.galleryController.window close];
+        self.galleryController = nil;
+    }
+    
+    [self playFirstAvailableVideo];
 }
 
 @end

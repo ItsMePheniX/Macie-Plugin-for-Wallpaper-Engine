@@ -13,4 +13,6 @@
 @property (nonatomic, strong) NSString *videoTitle;
 @property (nonatomic, strong) NSString *videoID;
 
+- (void)configureWithVideoData:(NSDictionary *)videoData;
+
 @end

@@ -25,8 +25,9 @@ This application plays Wallpaper Engine video wallpapers directly on your macOS 
 - **Gallery Interface**: NSCollectionView with scrollable thumbnail grid
 - **Async Thumbnail Generation**: Non-blocking thumbnail extraction using AVAssetImageGenerator
 - **Video Selection**: Click any thumbnail to instantly switch wallpapers
-- **Audio Controls**: Mute/unmute toggle (muted by default)
+- **Audio Controls**: State-aware mute/unmute toggle (muted by default)
 - **Wallpaper Engine Integration**: Automatic scanning of Steam Workshop directory
+- **Configurable Steam Path**: Folder picker to select steamapps location (saved in preferences)
 - **Window Management**: Positioned at `kCGDesktopWindowLevel - 1` for proper layering
 - **Mouse Passthrough**: Desktop icons remain fully clickable
 - **Universal Binary**: Supports both Apple Silicon (ARM64) and Intel (x86_64)
@@ -63,7 +64,10 @@ This application plays Wallpaper Engine video wallpapers directly on your macOS 
 - Status monitoring via KVO on player item
 
 ### 3. Asset Management
-- Scans `/Users/[user]/steamapps/workshop/content/431960/`
+- First launch shows folder picker to select steamapps directory
+- Selected path saved to NSUserDefaults for persistence
+- Validates folder contains `/workshop/content/431960/`
+- Menu item to change location anytime (Cmd+L)
 - Custom JSON parser for project.json files
 - Filters for video-type wallpapers only
 - Validates file existence before adding to collection
@@ -145,22 +149,18 @@ Macie-Plugin-for-Wallpaper-Engine/
 - [x] Video count display
 - [x] Window resizing support
 
-### Phase 5: Code Quality (COMPLETED)
-- [x] Zero build warnings
-- [x] CamelCase naming conventions
-- [x] Clean code (no emojis, minimal comments)
-- [x] ARC memory management
-- [x] Proper error handling in critical paths
 
-### Phase 6: Polish & Enhancement (IN PROGRESS)
+### Phase 5: Polish & Enhancement (IN PROGRESS)
 - [x] README documentation
-- [ ] Configurable Steam path (via preferences or config file)
+- [x] Configurable Steam path (via folder picker)
+- [x] Path saved in NSUserDefaults preferences
+- [x] Menu bar with "Change Wallpaper Location"
+- [x] State-aware mute button (checks before toggling)
 - [ ] Persistent thumbnail cache
 - [ ] Launch at login option
-- [ ] Keyboard shortcuts
-- [ ] Menu bar icon with quick controls
+- [ ] Additional keyboard shortcuts
 
-### Phase 7: Advanced Features (PLANNED)
+### Phase 6: Advanced Features (PLANNED)
 - [ ] Multi-monitor support (different wallpapers per screen)
 - [ ] Favorites and collections system
 - [ ] Playlist mode with auto-rotation
@@ -173,13 +173,6 @@ Macie-Plugin-for-Wallpaper-Engine/
 - [ ] Search and filter in gallery
 - [ ] Custom video filters/effects
 
-### Phase 8: Distribution (NOT STARTED)
-- [ ] Code signing with Apple Developer certificate
-- [ ] Notarization for macOS Gatekeeper
-- [ ] DMG installer creation
-- [ ] Automatic update mechanism
-- [ ] GitHub releases with binaries
-- [ ] Homebrew cask formula
 
 ## Future Enhancements
 
@@ -238,42 +231,35 @@ Cmd+Shift+P → "Tasks: Run Task" → "Run App"
 Cmd+Shift+P → "Tasks: Run Task" → "CMake: Clean"
 ```
 
-## Configuration
-
-### Wallpaper Engine Path
-The application scans the default Steam Workshop directory:
-```
-/Users/[username]/steamapps/workshop/content/431960/
-```
-
-To use a different path, modify [AppDelegate.mm](src/AppDelegate.mm):
-```objc
-std::string steamappsPath = "/path/to/your/steamapps";
-```
-
 ## Usage
 
-1. **Launch Application**: Run `MacieWallpaper.app`
+1. **First Launch**: Select your steamapps folder when prompted
+   - Usually located at: `/Users/[username]/Library/Application Support/Steam/steamapps`
+   - Or: `/Users/[username]/steamapps` (if you've moved Steam)
+   - Must contain: `workshop/content/431960/` (Wallpaper Engine workshop)
+
 2. **Automatic Scan**: App scans your Wallpaper Engine videos
 3. **Gallery Opens**: Browse thumbnails of all available videos
 4. **Select Wallpaper**: Click any thumbnail to set as wallpaper
-5. **Audio Control**: Use the "Mute/Unmute" button in toolbar
-6. **Quit**: Press `Cmd+Q` or choose Quit from menu
+5. **Audio Control**: Use the "Mute/Unmute" button in toolbar (checks current state before toggling)
+6. **Change Location**: Menu > "Change Wallpaper Location..." (Cmd+L)
+7. **Quit**: Press `Cmd+Q` or choose Quit from menu
 
 ### Tips
 - Desktop icons remain clickable (mouse passthrough enabled)
 - Videos are muted by default to avoid audio distraction
+- Mute button checks actual playback state before toggling
 - Gallery window can be resized and repositioned
 - Video starts playing immediately on selection
+- Selected steamapps path is saved in preferences
+- Can switch between multiple Steam library locations
 
 ## Known Limitations
 
 - **Single Monitor**: Multi-monitor support not yet implemented
-- **Hardcoded Path**: Steam path is hardcoded (requires recompile to change)
 - **Video Types Only**: Only supports video wallpapers (no scenes or web types)
 - **No Caching**: Thumbnails regenerated on each launch
 - **Basic JSON Parser**: Custom parser, not a full JSON library
-- **No Preferences UI**: Settings require code modification
 
 ## Troubleshooting
 
@@ -347,11 +333,6 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 5. Test thoroughly
 6. Submit a pull request
 
-### Code Style
-- Follow existing camelCase naming conventions
-- Keep code clean and well-documented
-- Ensure zero build warnings
-- Test on both Intel and Apple Silicon if possible
 
 ## License
 

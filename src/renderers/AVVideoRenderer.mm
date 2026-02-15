@@ -20,17 +20,14 @@
     self = [super init];
     if (self) {
         self.window = window;
-        NSLog(@"AVVideoRenderer: Initialized with window");
     }
     return self;
 }
 
 - (BOOL)loadAndPlayVideo:(NSString *)filePath {
-    NSLog(@"AVVideoRenderer: Loading video: %@", filePath);
-    
     // Verify file exists
     if (![[NSFileManager defaultManager] fileExistsAtPath:filePath]) {
-        NSLog(@"  ERROR: Video file not found at path: %@", filePath);
+        NSLog(@"AVVideoRenderer: Video file not found: %@", filePath);
         return NO;
     }
     
@@ -63,9 +60,6 @@
     _volume = 0.0;
     _muted = YES;
     
-    NSLog(@"AVVideoRenderer: Video loaded and playing");
-    NSLog(@"  Resolution: %@", NSStringFromSize(self.playerItem.presentationSize));
-    
     [self.playerItem addObserver:self
                       forKeyPath:@"status"
                          options:NSKeyValueObservingOptionNew
@@ -81,9 +75,7 @@
     if ([keyPath isEqualToString:@"status"]) {
         AVPlayerItem *item = (AVPlayerItem *)object;
         if (item.status == AVPlayerItemStatusFailed) {
-            NSLog(@"  ERROR: Video playback failed: %@", item.error.localizedDescription);
-        } else if (item.status == AVPlayerItemStatusReadyToPlay) {
-            NSLog(@"   Video ready to play");
+            NSLog(@"AVVideoRenderer: Playback failed: %@", item.error.localizedDescription);
         }
     }
 }
@@ -91,14 +83,12 @@
 - (void)play {
     if (self.queuePlayer) {
         [self.queuePlayer play];
-        NSLog(@"AVVideoRenderer: Playing");
     }
 }
 
 - (void)pause {
     if (self.queuePlayer) {
         [self.queuePlayer pause];
-        NSLog(@"AVVideoRenderer: Paused");
     }
 }
 
@@ -122,8 +112,6 @@
         
         self.queuePlayer = nil;
         self.playerItem = nil;
-        
-        NSLog(@"AVVideoRenderer: Stopped and cleaned up");
     }
 }
 
@@ -159,7 +147,6 @@
 
 - (void)dealloc {
     [self stop];
-    NSLog(@"AVVideoRenderer: Deallocated");
 }
 
 @end

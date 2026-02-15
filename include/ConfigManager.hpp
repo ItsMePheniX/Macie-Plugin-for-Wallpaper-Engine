@@ -3,6 +3,7 @@
 //  MacieWallpaper - Configuration Management
 //
 //  Created on 2026-02-14.
+//  Note: Placeholder for future JSON-based configuration
 //
 
 #pragma once

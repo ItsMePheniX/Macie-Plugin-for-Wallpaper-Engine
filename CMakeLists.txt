@@ -24,6 +24,7 @@ find_library(AVFOUNDATION_LIBRARY AVFoundation REQUIRED)
 find_library(COREMEDIA_LIBRARY CoreMedia REQUIRED)
 find_library(METAL_LIBRARY Metal REQUIRED)
 find_library(QUARTZCORE_LIBRARY QuartzCore REQUIRED)
+find_library(IOKIT_LIBRARY IOKit REQUIRED)
 
 # Source files
 set(SOURCES
@@ -35,6 +36,8 @@ set(SOURCES
     src/core/WallpaperEngine.cpp
     src/core/AssetManager.cpp
     src/core/ConfigManager.cpp
+    src/core/ThumbnailCache.mm
+    src/core/PerformanceMonitor.mm
     
     # Renderers (Objective-C++)
     src/renderers/AVVideoRenderer.mm
@@ -43,6 +46,8 @@ set(SOURCES
     # UI (Objective-C)
     src/ui/MainWindowController.mm
     src/ui/VideoCollectionItem.m
+    src/ui/WelcomeWindowController.m
+    src/ui/PreferencesWindowController.m
 )
 
 # Header files
@@ -54,7 +59,12 @@ set(HEADERS
     include/DesktopWindowManager.h
     include/MainWindowController.h
     include/VideoCollectionItem.h
+    include/WelcomeWindowController.h
+    include/PreferencesWindowController.h
     include/AppDelegate.h
+    include/Constants.h
+    include/ThumbnailCache.h
+    include/PerformanceMonitor.h
 )
 
 # Create executable
@@ -68,6 +78,7 @@ target_link_libraries(${PROJECT_NAME}
     ${COREMEDIA_LIBRARY}
     ${METAL_LIBRARY}
     ${QUARTZCORE_LIBRARY}
+    ${IOKIT_LIBRARY}
 )
 
 # Include directories

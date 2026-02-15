@@ -16,56 +16,44 @@ namespace fs = std::filesystem;
 
 namespace Macie {
 
+// Wallpaper Engine Steam Workshop App ID
+static const std::string kWallpaperEngineAppId = "431960";
+
 AssetManager::AssetManager() {
-    std::cout << "AssetManager: Constructor" << std::endl;
 }
 
 AssetManager::~AssetManager() {
-    std::cout << "AssetManager: Destructor" << std::endl;
 }
 
 std::vector<WallpaperProject> AssetManager::scanWallpaperEngine(const std::string& steamappsPath) {
     wallpapers.clear();
     
-    std::cout << "AssetManager: Scanning Wallpaper Engine directory..." << std::endl;
-    std::cout << "  Base path: " << steamappsPath << std::endl;
-    
-    // Workshop content path
-    std::string workshopPath = steamappsPath + "/workshop/content/431960";
+    // Build workshop content path using the Wallpaper Engine App ID
+    std::string workshopPath = steamappsPath + "/workshop/content/" + kWallpaperEngineAppId;
     
     if (!fs::exists(workshopPath)) {
-        std::cerr << "  ERROR: Workshop path not found: " << workshopPath << std::endl;
+        std::cerr << "Workshop path not found: " << workshopPath << std::endl;
         return wallpapers;
     }
     
-    int scanned = 0;
-    int found = 0;
+    int foldersScanned = 0;
+    int videosFound = 0;
     
     // Iterate through workshop folders
-    std::cout << "  Starting directory iteration..." << std::endl;
     for (const auto& entry : fs::directory_iterator(workshopPath)) {
         if (entry.is_directory()) {
-            scanned++;
-            std::cout << "  Scanning folder " << scanned << ": " << entry.path().filename() << std::endl;
+            foldersScanned++;
             auto project = parseProjectJson(entry.path().string());
             if (project.has_value()) {
-                // Only add video wallpapers
                 if (project->type == "video") {
                     wallpapers.push_back(project.value());
-                    found++;
-                    std::cout << "  ✓ Found: " << project->title << " (" << project->id << ")" << std::endl;
-                } else {
-                    std::cout << "  - Skipping (type=" << project->type << ")" << std::endl;
+                    videosFound++;
                 }
-            } else {
-                std::cout << "  - No valid project.json" << std::endl;
             }
         }
     }
     
-    std::cout << "AssetManager: Scan complete" << std::endl;
-    std::cout << "  Folders scanned: " << scanned << std::endl;
-    std::cout << "  Video wallpapers found: " << found << std::endl;
+    std::cout << "Scan complete: " << videosFound << " videos found" << std::endl;
     
     return wallpapers;
 }
