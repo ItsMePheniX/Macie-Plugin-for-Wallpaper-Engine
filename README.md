@@ -8,6 +8,12 @@ A lightweight macOS desktop application that plays Wallpaper Engine videos as de
 
 This application plays Wallpaper Engine video wallpapers directly on your macOS desktop, behind your desktop icons. Browse and select from your Wallpaper Engine library using an intuitive gallery interface with thumbnail previews, sidebar navigation, and performance optimizations.
 
+## Screenshot
+
+![MacieWallpaper Gallery](G5LuffySS.png)
+![MacieWallpaper Gallery](m4SS.png)
+![MacieWallpaper Gallery](duneSS.png)
+
 ## Architecture
 
 ### Technology Stack
