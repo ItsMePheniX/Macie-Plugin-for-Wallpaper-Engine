@@ -1,10 +1,12 @@
 # Macie-Plugin-for-Wallpaper-Engine
 
-A lightweight macOS desktop application that plays Wallpaper Engine videos as desktop wallpapers using native macOS frameworks. Features a gallery-style GUI for browsing and managing wallpapers.
+> **Note**: This is a personal project built for my own use. Contributions, suggestions, and improvements from others are always appreciated!
+
+A lightweight macOS desktop application that plays Wallpaper Engine videos as desktop wallpapers using native macOS frameworks. Features a modern dark-themed gallery interface for browsing and managing wallpapers.
 
 ## Project Overview
 
-This application plays Wallpaper Engine video wallpapers directly on your macOS desktop, behind your desktop icons. Browse and select from your Wallpaper Engine library using an intuitive gallery interface with thumbnail previews.
+This application plays Wallpaper Engine video wallpapers directly on your macOS desktop, behind your desktop icons. Browse and select from your Wallpaper Engine library using an intuitive gallery interface with thumbnail previews, sidebar navigation, and performance optimizations.
 
 ## Architecture
 
@@ -16,17 +18,20 @@ This application plays Wallpaper Engine video wallpapers directly on your macOS 
 - **UI Layer**: Objective-C + AppKit (NSWindow, NSCollectionView)
 - **Video Playback**: AVFoundation (hardware-accelerated)
 - **Rendering**: AVPlayerLayer + QuartzCore
-- **Frameworks**: Cocoa, AVFoundation, CoreMedia, Metal, QuartzCore
+- **Frameworks**: Cocoa, AVFoundation, CoreMedia, Metal, QuartzCore, IOKit
 
 ## Current Features
 
 ### Implemented
 - **Desktop Wallpaper Video Playback**: Seamless video looping behind desktop icons
-- **Gallery Interface**: NSCollectionView with scrollable thumbnail grid
+- **Thumbnail Caching**: Memory + disk cache for fast loading (`~/Library/Caches/MacieWallpaper/thumbnails/`)
+- **Performance Monitor**: Auto-pause on battery power or fullscreen apps (configurable)
 - **Async Thumbnail Generation**: Non-blocking thumbnail extraction using AVAssetImageGenerator
 - **Video Selection**: Click any thumbnail to instantly switch wallpapers
 - **Audio Controls**: State-aware mute/unmute toggle (muted by default)
 - **Wallpaper Engine Integration**: Automatic scanning of Steam Workshop directory
+- **Welcome Window**: First-launch setup wizard for steamapps selection
+- **In-Window Preferences**: Settings panel with path, performance, and cache options
 - **Configurable Steam Path**: Folder picker to select steamapps location (saved in preferences)
 - **Window Management**: Positioned at `kCGDesktopWindowLevel - 1` for proper layering
 - **Mouse Passthrough**: Desktop icons remain fully clickable
@@ -35,7 +40,6 @@ This application plays Wallpaper Engine video wallpapers directly on your macOS 
 ### Video Playback Features
 - AVFoundation-based renderer with hardware acceleration
 - AVPlayerLooper for seamless, gap-free looping
-- Volume controls (0.0 - 1.0 range)
 - Efficient buffering (2 second forward buffer)
 - Automatic video file validation
 - Support for MP4, MOV, and all AVFoundation-compatible formats
@@ -64,7 +68,7 @@ This application plays Wallpaper Engine video wallpapers directly on your macOS 
 - Status monitoring via KVO on player item
 
 ### 3. Asset Management
-- First launch shows folder picker to select steamapps directory
+- First launch shows welcome window to select steamapps directory
 - Selected path saved to NSUserDefaults for persistence
 - Validates folder contains `/workshop/content/431960/`
 - Menu item to change location anytime (Cmd+L)
@@ -73,13 +77,29 @@ This application plays Wallpaper Engine video wallpapers directly on your macOS 
 - Validates file existence before adding to collection
 - Extracts: title, type, file path, preview, description
 
-### 4. Gallery UI
+### 4. Thumbnail Caching
+- Dual-layer cache: NSCache (memory) + disk storage (PNG files)
+- Cache location: `~/Library/Caches/MacieWallpaper/thumbnails/`
+- Memory cache limit: 100 items
+- Async generation with GCD concurrent queue
+- Prioritizes preview.jpg, falls back to video frame extraction
+- Background pre-generation for all wallpapers
+
+### 5. Performance Monitor
+- Power source monitoring via IOPSNotificationCreateRunLoopSource
+- Fullscreen app detection via CGWindowListCopyWindowInfo
+- Configurable pause-on-battery option
+- Configurable pause-on-fullscreen option
+- Delegate pattern for playback control notifications
+
+### 6. Gallery UI
+- Dark-themed interface with sidebar navigation
 - NSCollectionView with flow layout
-- Async thumbnail generation at 1-second mark (360x270 resolution)
-- Item size: 200x150 with rounded corners
+- Wallpaper cards with hover animations (CATransform3D scale)
+- Selection highlighting with blue border and glow
+- Item size: 200x150 with 12px rounded corners
 - Grid spacing: 20pt between items
-- Selection highlighting with blue border
-- Resizable window (minimum 600x400, default 900x600)
+- Resizable window (minimum 800x500, default 1000x650)
 
 ## Project Structure
 
@@ -90,24 +110,33 @@ Macie-Plugin-for-Wallpaper-Engine/
 │   ├── AppDelegate.h
 │   ├── AssetManager.hpp        # C++ asset management
 │   ├── AVVideoRenderer.h
-│   ├── ConfigManager.hpp
-│   ├── DesktopWindowManager.h
+│   ├── ConfigManager.hpp       # Configuration (placeholder)
+│   ├── Constants.h             # App constants and defaults
+│   ├── DesktopWindowManager.h  # Window management (placeholder)
 │   ├── MainWindowController.h
+│   ├── PerformanceMonitor.h    # Battery/fullscreen detection
+│   ├── PreferencesWindowController.h
+│   ├── ThumbnailCache.h        # Thumbnail caching system
 │   ├── VideoCollectionItem.h
-│   └── WallpaperEngine.hpp
+│   ├── WallpaperEngine.hpp     # Core engine (placeholder)
+│   └── WelcomeWindowController.h
 ├── src/
 │   ├── main.m                  # Application entry point
 │   ├── AppDelegate.mm          # App lifecycle management
 │   ├── core/                   # C++ core engine
 │   │   ├── AssetManager.cpp    # Workshop scanning, JSON parsing
 │   │   ├── ConfigManager.cpp   # Configuration (placeholder)
+│   │   ├── PerformanceMonitor.mm # Power source & fullscreen monitoring
+│   │   ├── ThumbnailCache.mm   # Memory + disk thumbnail cache
 │   │   └── WallpaperEngine.cpp # Core engine (placeholder)
 │   ├── renderers/
 │   │   ├── AVVideoRenderer.mm  # Video playback & looping
 │   │   └── DesktopWindowManager.mm
 │   └── ui/                     # User interface
-│       ├── MainWindowController.mm  # Gallery window
-│       └── VideoCollectionItem.m    # Grid item UI
+│       ├── MainWindowController.mm  # Gallery window with sidebar
+│       ├── PreferencesWindowController.m # Standalone preferences
+│       ├── VideoCollectionItem.m    # Grid item with hover effects
+│       └── WelcomeWindowController.m # First-launch wizard
 └── build/                      # CMake build output
     └── MacieWallpaper.app
 ```
@@ -149,23 +178,26 @@ Macie-Plugin-for-Wallpaper-Engine/
 - [x] Video count display
 - [x] Window resizing support
 
-
-### Phase 5: Polish & Enhancement (IN PROGRESS)
+### Phase 5: Polish & Enhancement (COMPLETED)
 - [x] README documentation
 - [x] Configurable Steam path (via folder picker)
 - [x] Path saved in NSUserDefaults preferences
 - [x] Menu bar with "Change Wallpaper Location"
 - [x] State-aware mute button (checks before toggling)
-- [ ] Persistent thumbnail cache
+- [x] Persistent thumbnail cache (memory + disk)
+- [x] Dark-themed UI with sidebar navigation
+- [x] Welcome window for first-launch setup
+- [x] In-window preferences panel
+- [x] Hover animations on wallpaper cards
+- [x] Performance monitor (battery/fullscreen detection)
 - [ ] Launch at login option
 - [ ] Additional keyboard shortcuts
 
-### Phase 6: Advanced Features (PLANNED)
+### Phase 6: Advanced Features (May or may not do it)
 - [ ] Multi-monitor support (different wallpapers per screen)
 - [ ] Favorites and collections system
 - [ ] Playlist mode with auto-rotation
 - [ ] Time-based wallpaper switching
-- [ ] Preferences window with settings UI
 - [ ] Custom video import (drag and drop)
 - [ ] Scene wallpaper support (3D/interactive)
 - [ ] Performance profiles (quality presets)
@@ -177,12 +209,14 @@ Macie-Plugin-for-Wallpaper-Engine/
 ## Future Enhancements
 
 Additional features under consideration:
-- Sidebar navigation (Library, Favorites, Recent, Settings)
+- Favorites and collections system
 - Search bar with filters (resolution, duration, tags)
 - Preview panel with larger video playback
 - iCloud settings sync
-- Battery-aware performance optimization
+- Multi-monitor support with per-display wallpapers
 - Sleep/wake event handling
+- Launch at login option
+- Playlist mode with scheduling
 
 ## Requirements
 
@@ -196,7 +230,7 @@ Additional features under consideration:
 - **Architecture**: Apple Silicon (ARM64) or Intel (x86_64)
 - **RAM**: 4GB minimum, 8GB recommended
 - **Storage**: 100MB for app, plus space for Wallpaper Engine videos
-- **Display**: Any resolution (tested on Retina displays)
+- **Display**: Any resolution (tested on Retina displays, MBA(m4))
 
 ## Building from Source
 
@@ -219,47 +253,42 @@ open build/MacieWallpaper.app
 
 ```bash
 # Configure build
-Cmd+Shift+P → "Tasks: Run Task" → "CMake: Configure"
+Cmd+Shift+P -> "Tasks: Run Task" -> "CMake: Configure"
 
 # Build project (default: Cmd+Shift+B)
-Cmd+Shift+P → "Tasks: Run Build Task" → "CMake: Build"
+Cmd+Shift+P -> "Tasks: Run Build Task" -> "CMake: Build"
 
 # Run application
-Cmd+Shift+P → "Tasks: Run Task" → "Run App"
+Cmd+Shift+P -> "Tasks: Run Task" -> "Run App"
 
 # Clean build
-Cmd+Shift+P → "Tasks: Run Task" → "CMake: Clean"
+Cmd+Shift+P -> "Tasks: Run Task" -> "CMake: Clean"
 ```
 
 ## Usage
 
-1. **First Launch**: Select your steamapps folder when prompted
+1. **First Launch**: Welcome window guides you to select your steamapps folder
    - Usually located at: `/Users/[username]/Library/Application Support/Steam/steamapps`
    - Or: `/Users/[username]/steamapps` (if you've moved Steam)
    - Must contain: `workshop/content/431960/` (Wallpaper Engine workshop)
 
-2. **Automatic Scan**: App scans your Wallpaper Engine videos
-3. **Gallery Opens**: Browse thumbnails of all available videos
+2. **Automatic Scan**: App scans your Wallpaper Engine videos and caches thumbnails
+3. **Gallery Opens**: Browse thumbnails in a dark-themed gallery with sidebar
 4. **Select Wallpaper**: Click any thumbnail to set as wallpaper
-5. **Audio Control**: Use the "Mute/Unmute" button in toolbar (checks current state before toggling)
-6. **Change Location**: Menu > "Change Wallpaper Location..." (Cmd+L)
+5. **Audio Control**: Use the "Mute/Unmute" button in the sidebar
+6. **Preferences**: Click "Preferences" in sidebar to access settings:
+   - Change Steam folder location
+   - Enable/disable pause on battery
+   - Enable/disable pause when apps are fullscreen
+   - Clear thumbnail cache
 7. **Quit**: Press `Cmd+Q` or choose Quit from menu
-
-### Tips
-- Desktop icons remain clickable (mouse passthrough enabled)
-- Videos are muted by default to avoid audio distraction
-- Mute button checks actual playback state before toggling
-- Gallery window can be resized and repositioned
-- Video starts playing immediately on selection
-- Selected steamapps path is saved in preferences
-- Can switch between multiple Steam library locations
 
 ## Known Limitations
 
 - **Single Monitor**: Multi-monitor support not yet implemented
 - **Video Types Only**: Only supports video wallpapers (no scenes or web types)
-- **No Caching**: Thumbnails regenerated on each launch
 - **Basic JSON Parser**: Custom parser, not a full JSON library
+- **No Playlist Mode**: Manual wallpaper selection required
 
 ## Troubleshooting
 
