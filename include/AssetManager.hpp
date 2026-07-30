@@ -27,15 +27,14 @@ class AssetManager {
 public:
     AssetManager();
     ~AssetManager();
-    
+
     std::vector<WallpaperProject> scanWallpaperEngine(const std::string& steamappsPath);
     std::vector<WallpaperProject> getVideoWallpapers() const;
     std::optional<WallpaperProject> getWallpaperById(const std::string& id) const;
-    
+
 private:
     std::vector<WallpaperProject> wallpapers;
     std::optional<WallpaperProject> parseProjectJson(const std::string& folderPath);
-    bool containsIgnoreCase(const std::string& str, const std::string& substr) const;
 };
 
 } // namespace Macie

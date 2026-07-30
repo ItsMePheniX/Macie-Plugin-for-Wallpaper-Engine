@@ -12,6 +12,9 @@
 @property (weak, nonatomic) NSWindow *window;
 @property (strong, nonatomic) AVQueuePlayer *queuePlayer;
 @property (strong, nonatomic) AVPlayerItem *playerItem;
+/// Tracks whether the KVO observer for "status" is currently registered.
+/// Guards removal so it is never skipped even if queuePlayer becomes nil first.
+@property (nonatomic) BOOL isObservingStatus;
 @end
 
 @implementation AVVideoRenderer
@@ -20,6 +23,7 @@
     self = [super init];
     if (self) {
         self.window = window;
+        _isObservingStatus = NO;
     }
     return self;
 }
@@ -30,41 +34,43 @@
         NSLog(@"AVVideoRenderer: Video file not found: %@", filePath);
         return NO;
     }
-    
+
     // Create URL from file path
     NSURL *videoURL = [NSURL fileURLWithPath:filePath];
-    
+
     // Clean up previous player if exists
     [self stop];
-    
+
     // Create player item
     self.playerItem = [AVPlayerItem playerItemWithURL:videoURL];
     self.playerItem.preferredForwardBufferDuration = 2.0;
-    
+
     self.queuePlayer = [[AVQueuePlayer alloc] initWithItems:@[self.playerItem]];
-    
+
     self.looper = [AVPlayerLooper playerLooperWithPlayer:self.queuePlayer
                                             templateItem:self.playerItem];
-    
+
     _playerLayer = [AVPlayerLayer playerLayerWithPlayer:self.queuePlayer];
     self.playerLayer.frame = self.window.contentView.bounds;
     self.playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
     self.playerLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-    
+
     [self.window.contentView setWantsLayer:YES];
     [self.window.contentView.layer addSublayer:self.playerLayer];
-    
+
     [self.queuePlayer play];
-    
+
     self.queuePlayer.volume = 0.0;
     _volume = 0.0;
     _muted = YES;
-    
+
+    // Register KVO and track the flag so removal is always safe.
     [self.playerItem addObserver:self
                       forKeyPath:@"status"
                          options:NSKeyValueObservingOptionNew
                          context:nil];
-    
+    self.isObservingStatus = YES;
+
     return YES;
 }
 
@@ -93,26 +99,29 @@
 }
 
 - (void)stop {
+    // Remove KVO observer guarded by the flag — safe even when queuePlayer is nil.
+    if (self.isObservingStatus && self.playerItem) {
+        [self.playerItem removeObserver:self forKeyPath:@"status"];
+        self.isObservingStatus = NO;
+    }
+
     if (self.queuePlayer) {
         [self.queuePlayer pause];
-        
-        if (self.playerItem) {
-            [self.playerItem removeObserver:self forKeyPath:@"status"];
-        }
-        
+
         if (self.looper) {
             [self.looper disableLooping];
             self.looper = nil;
         }
-        
+
         if (self.playerLayer) {
             [self.playerLayer removeFromSuperlayer];
             _playerLayer = nil;
         }
-        
+
         self.queuePlayer = nil;
-        self.playerItem = nil;
     }
+
+    self.playerItem = nil;
 }
 
 - (BOOL)isPlaying {

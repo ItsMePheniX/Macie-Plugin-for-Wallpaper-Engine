@@ -31,18 +31,21 @@ set(SOURCES
     # Main app
     src/main.m
     src/AppDelegate.mm
-    
+
     # Core C++ engine
-    src/core/WallpaperEngine.cpp
     src/core/AssetManager.cpp
-    src/core/ConfigManager.cpp
+    src/core/MacieAssetManagerWrapper.mm   # Typed Obj-C++ wrapper for AssetManager
     src/core/ThumbnailCache.mm
     src/core/PerformanceMonitor.mm
-    
+
+    # Future: src/core/WallpaperEngine.cpp   (scene/web wallpaper support)
+    # Future: src/core/ConfigManager.cpp     (JSON-based configuration)
+
     # Renderers (Objective-C++)
     src/renderers/AVVideoRenderer.mm
-    src/renderers/DesktopWindowManager.mm
-    
+
+    # Future: src/renderers/DesktopWindowManager.mm  (multi-monitor window management)
+
     # UI (Objective-C)
     src/ui/MainWindowController.mm
     src/ui/VideoCollectionItem.m
@@ -54,6 +57,7 @@ set(SOURCES
 set(HEADERS
     include/WallpaperEngine.hpp
     include/AssetManager.hpp
+    include/MacieAssetManagerWrapper.h
     include/ConfigManager.hpp
     include/AVVideoRenderer.h
     include/DesktopWindowManager.h
@@ -91,8 +95,8 @@ target_include_directories(${PROJECT_NAME}
 set_target_properties(${PROJECT_NAME} PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.macie.MacieWallpaper"
     MACOSX_BUNDLE_BUNDLE_NAME "MacieWallpaper"
-    MACOSX_BUNDLE_BUNDLE_VERSION "0.0.1"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "0.0.1"
+    MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0"
     MACOSX_BUNDLE_COPYRIGHT "Copyright © 2026. All rights reserved."
     XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ""
     XCODE_ATTRIBUTE_CODE_SIGN_REQUIRED "NO"
