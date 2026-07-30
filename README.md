@@ -115,6 +115,7 @@ Macie-Plugin-for-Wallpaper-Engine/
 ├── include/                    # Header files
 │   ├── AppDelegate.h
 │   ├── AssetManager.hpp        # C++ asset management
+│   ├── MacieAssetManagerWrapper.h  # Obj-C++ bridge wrapper for AssetManager
 │   ├── AVVideoRenderer.h
 │   ├── ConfigManager.hpp       # Configuration (placeholder)
 │   ├── Constants.h             # App constants and defaults
@@ -131,13 +132,11 @@ Macie-Plugin-for-Wallpaper-Engine/
 │   ├── AppDelegate.mm          # App lifecycle management
 │   ├── core/                   # C++ core engine
 │   │   ├── AssetManager.cpp    # Workshop scanning, JSON parsing
-│   │   ├── ConfigManager.cpp   # Configuration (placeholder)
+│   │   ├── MacieAssetManagerWrapper.mm  # Obj-C++ wrapper (owns AssetManager)
 │   │   ├── PerformanceMonitor.mm # Power source & fullscreen monitoring
-│   │   ├── ThumbnailCache.mm   # Memory + disk thumbnail cache
-│   │   └── WallpaperEngine.cpp # Core engine (placeholder)
+│   │   └── ThumbnailCache.mm   # Memory + disk thumbnail cache
 │   ├── renderers/
-│   │   ├── AVVideoRenderer.mm  # Video playback & looping
-│   │   └── DesktopWindowManager.mm
+│   │   └── AVVideoRenderer.mm  # Video playback & looping
 │   └── ui/                     # User interface
 │       ├── MainWindowController.mm  # Gallery window with sidebar
 │       ├── PreferencesWindowController.m # Standalone preferences
