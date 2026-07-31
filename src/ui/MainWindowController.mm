@@ -525,24 +525,30 @@
         NSDictionary *video = self.videos[indexPath.item];
         NSString *videoPath = video[@"path"];
         NSString *videoTitle = video[@"title"];
+        NSString *videoId = video[@"id"];
 
         // Remember current mute state before loading new video
         BOOL wasMuted = self.videoRenderer.muted;
 
-        [self.videoRenderer loadAndPlayVideo:videoPath];
+        BOOL success = [self.videoRenderer loadAndPlayVideo:videoPath];
 
-        // Reapply the mute state to the new video
-        if (wasMuted) {
-            [self.videoRenderer mute];
+        if (success) {
+            // Persist this wallpaper so the next launch restores it
+            [[NSUserDefaults standardUserDefaults] setObject:videoId forKey:kDefaultsLastWallpaperId];
+
+            // Reapply the mute state to the new video
+            if (wasMuted) {
+                [self.videoRenderer mute];
+            }
+
+            [self updateMuteButton];
+
+            // Update statistics with currently playing wallpaper
+            NSString *statsText = [NSString stringWithFormat:@"Total Wallpapers: %lu\nCurrently Playing:\n%@",
+                                  (unsigned long)self.videos.count,
+                                  videoTitle];
+            self.statsLabel.stringValue = statsText;
         }
-
-        [self updateMuteButton];
-
-        // Update statistics with currently playing wallpaper
-        NSString *statsText = [NSString stringWithFormat:@"Total Wallpapers: %lu\nCurrently Playing:\n%@",
-                              (unsigned long)self.videos.count,
-                              videoTitle];
-        self.statsLabel.stringValue = statsText;
     }
 }
 

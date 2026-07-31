@@ -34,6 +34,10 @@
     return _assetManager->getVideoWallpapers();
 }
 
+- (std::optional<Macie::WallpaperProject>)getWallpaperById:(const std::string &)wallpaperId {
+    return _assetManager->getWallpaperById(wallpaperId);
+}
+
 // unique_ptr destructor is called automatically by ARC dealloc — no manual cleanup needed.
 
 @end

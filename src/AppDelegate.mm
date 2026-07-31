@@ -101,9 +101,27 @@
         return;
     }
 
-    Macie::WallpaperProject firstVideo = wallpapers[0];
-    NSString *videoPath = [NSString stringWithUTF8String:firstVideo.videoFilePath.c_str()];
-    NSString *title = [NSString stringWithUTF8String:firstVideo.title.c_str()];
+    // Restore the wallpaper that was playing in the previous session.
+    // Falls back to wallpapers[0] if no ID was saved or the saved ID is no longer present.
+    Macie::WallpaperProject wallpaperToPlay = wallpapers[0];
+
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *savedId = [defaults stringForKey:kDefaultsLastWallpaperId];
+
+    if (savedId.length > 0) {
+        std::string savedIdStr = [savedId UTF8String];
+        auto found = [self.assetManager getWallpaperById:savedIdStr];
+        if (found.has_value()) {
+            wallpaperToPlay = found.value();
+            NSLog(@"Restoring last wallpaper: %s", wallpaperToPlay.title.c_str());
+        } else {
+            NSLog(@"Last wallpaper ID '%@' not found in library, falling back to first", savedId);
+        }
+    }
+
+    NSString *videoPath = [NSString stringWithUTF8String:wallpaperToPlay.videoFilePath.c_str()];
+    NSString *title = [NSString stringWithUTF8String:wallpaperToPlay.title.c_str()];
+    NSString *wallpaperId = [NSString stringWithUTF8String:wallpaperToPlay.id.c_str()];
 
     NSLog(@"Loading wallpaper: %@", title);
 
@@ -111,8 +129,10 @@
     BOOL success = [self.videoRenderer loadAndPlayVideo:videoPath];
 
     if (success) {
+        // Record which wallpaper is now playing (covers the first-launch case where no ID was saved)
+        [defaults setObject:wallpaperId forKey:kDefaultsLastWallpaperId];
+
         // Restore mute state from previous session
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         BOOL hasStoredState = [defaults objectForKey:kDefaultsLastMuteState] != nil;
         BOOL lastMuteState = hasStoredState ? [defaults boolForKey:kDefaultsLastMuteState] : YES;
 
