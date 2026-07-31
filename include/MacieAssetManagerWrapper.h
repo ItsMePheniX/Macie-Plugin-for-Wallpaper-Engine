@@ -25,6 +25,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// Return the cached list of video wallpapers from the last scan.
 - (std::vector<Macie::WallpaperProject>)getVideoWallpapers;
 
+/// Find a specific wallpaper by its workshop folder ID.
+/// Returns an empty optional if no wallpaper with that ID was found in the last scan.
+- (std::optional<Macie::WallpaperProject>)getWallpaperById:(const std::string &)wallpaperId;
+
 @end
 
 NS_ASSUME_NONNULL_END
