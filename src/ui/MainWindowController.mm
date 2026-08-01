@@ -12,6 +12,7 @@
 #import "Constants.h"
 #import "ThumbnailCache.h"
 #import <AVFoundation/AVFoundation.h>
+#import <ServiceManagement/ServiceManagement.h>
 #import <vector>
 
 // NSCollectionViewDelegate conformance added — previously only DataSource was declared.
@@ -343,6 +344,34 @@
 
     cacheSection.contentView = cacheContent;
     [self.preferencesView addSubview:cacheSection];
+
+    // Startup Section
+    NSBox *startupSection = [[NSBox alloc] initWithFrame:NSMakeRect(30, self.preferencesView.bounds.size.height - 540, self.preferencesView.bounds.size.width - 60, 80)];
+    startupSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    startupSection.title = @"Startup";
+    startupSection.titlePosition = NSAtTop;
+
+    NSView *startupContent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, startupSection.bounds.size.width - 20, 50)];
+
+    NSButton *launchAtLoginCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 25, startupContent.bounds.size.width - leftPadding * 2, 20)];
+    [launchAtLoginCheckbox setButtonType:NSButtonTypeSwitch];
+    launchAtLoginCheckbox.title = @"Launch MacieWallpaper at login";
+    launchAtLoginCheckbox.state = [self isLaunchAtLoginEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
+    launchAtLoginCheckbox.target = self;
+    launchAtLoginCheckbox.action = @selector(launchAtLoginChanged:);
+    [startupContent addSubview:launchAtLoginCheckbox];
+
+    NSTextField *startupHelpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftPadding, 5, startupContent.bounds.size.width - leftPadding * 2, 18)];
+    startupHelpText.stringValue = @"Wallpaper will begin playing automatically when you log in.";
+    startupHelpText.font = [NSFont systemFontOfSize:11];
+    startupHelpText.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+    startupHelpText.editable = NO;
+    startupHelpText.bordered = NO;
+    startupHelpText.backgroundColor = [NSColor clearColor];
+    [startupContent addSubview:startupHelpText];
+
+    startupSection.contentView = startupContent;
+    [self.preferencesView addSubview:startupSection];
 }
 
 - (void)showGalleryView {
@@ -572,6 +601,52 @@
         self.muteButton.title = @"Unmute";
     } else {
         self.muteButton.title = @"Mute";
+    }
+}
+
+#pragma mark - Launch at Login
+
+/// Returns whether the app is currently registered as a login item.
+/// Reads live from SMAppService so the checkbox always reflects system state.
+- (BOOL)isLaunchAtLoginEnabled {
+    if (@available(macOS 13.0, *)) {
+        return [SMAppService mainAppService].status == SMAppServiceStatusEnabled;
+    }
+    return NO;
+}
+
+/// Called when the user toggles the "Launch at login" checkbox.
+- (void)launchAtLoginChanged:(NSButton *)sender {
+    if (@available(macOS 13.0, *)) {
+        NSError *error = nil;
+        BOOL enable = (sender.state == NSControlStateValueOn);
+
+        if (enable) {
+            [[SMAppService mainAppService] registerAndReturnError:&error];
+        } else {
+            [[SMAppService mainAppService] unregisterAndReturnError:&error];
+        }
+
+        if (error) {
+            // Revert the checkbox to match actual system state
+            sender.state = [self isLaunchAtLoginEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
+
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = enable ? @"Could Not Enable Launch at Login" : @"Could Not Disable Launch at Login";
+            alert.informativeText = error.localizedDescription;
+            alert.alertStyle = NSAlertStyleWarning;
+            [alert addButtonWithTitle:@"OK"];
+            [alert runModal];
+        }
+    } else {
+        // macOS 12 — SMAppService not available
+        sender.state = NSControlStateValueOff;
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Not Supported";
+        alert.informativeText = @"Launch at login requires macOS 13 or later.";
+        alert.alertStyle = NSAlertStyleInformational;
+        [alert addButtonWithTitle:@"OK"];
+        [alert runModal];
     }
 }
 
