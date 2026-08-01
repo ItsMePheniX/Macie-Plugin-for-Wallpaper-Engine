@@ -170,6 +170,20 @@
                                              selector:@selector(performanceSettingsChanged:)
                                                  name:@"PerformanceSettingsChanged"
                                                object:nil];
+
+    // Sleep/wake observers must be registered on the workspace notification center,
+    // not NSNotificationCenter.defaultCenter.
+    NSNotificationCenter *workspaceCenter = [[NSWorkspace sharedWorkspace] notificationCenter];
+
+    [workspaceCenter addObserver:self
+                        selector:@selector(systemWillSleep:)
+                            name:NSWorkspaceWillSleepNotification
+                          object:nil];
+
+    [workspaceCenter addObserver:self
+                        selector:@selector(systemDidWake:)
+                            name:NSWorkspaceDidWakeNotification
+                          object:nil];
 }
 
 - (void)performanceSettingsChanged:(NSNotification *)notification {
@@ -177,6 +191,25 @@
     self.performanceMonitor.pauseOnBattery = [defaults boolForKey:kDefaultsPauseOnBattery];
     self.performanceMonitor.pauseOnFullscreen = [defaults boolForKey:kDefaultsPauseOnFullscreen];
     [self.performanceMonitor evaluatePlaybackState];
+}
+
+#pragma mark - Sleep / Wake
+
+- (void)systemWillSleep:(NSNotification *)notification {
+    // Pause immediately — sleep overrides all other playback state.
+    if (self.videoRenderer) {
+        NSLog(@"System going to sleep — pausing wallpaper");
+        [self.videoRenderer pause];
+    }
+}
+
+- (void)systemDidWake:(NSNotification *)notification {
+    // Re-evaluate rather than blindly resuming — if pause-on-battery is on and the
+    // Mac woke on battery power, the wallpaper should stay paused.
+    if (self.videoRenderer && self.performanceMonitor) {
+        NSLog(@"System woke — re-evaluating playback state");
+        [self.performanceMonitor evaluatePlaybackState];
+    }
 }
 
 #pragma mark - PerformanceMonitorDelegate
@@ -201,8 +234,9 @@
         self.performanceMonitor = nil;
     }
 
-    // Remove notification observers
+    // Remove observers from both notification centers
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
 
     if (self.videoRenderer) {
         [self.videoRenderer stop];
