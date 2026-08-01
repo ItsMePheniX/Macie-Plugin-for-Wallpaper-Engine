@@ -25,6 +25,7 @@ find_library(COREMEDIA_LIBRARY CoreMedia REQUIRED)
 find_library(METAL_LIBRARY Metal REQUIRED)
 find_library(QUARTZCORE_LIBRARY QuartzCore REQUIRED)
 find_library(IOKIT_LIBRARY IOKit REQUIRED)
+find_library(SERVICEMANAGEMENT_LIBRARY ServiceManagement REQUIRED)
 
 # Source files
 set(SOURCES
@@ -83,6 +84,7 @@ target_link_libraries(${PROJECT_NAME}
     ${METAL_LIBRARY}
     ${QUARTZCORE_LIBRARY}
     ${IOKIT_LIBRARY}
+    ${SERVICEMANAGEMENT_LIBRARY}
 )
 
 # Include directories
