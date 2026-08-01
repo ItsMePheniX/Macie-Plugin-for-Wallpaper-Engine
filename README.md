@@ -195,7 +195,7 @@ Macie-Plugin-for-Wallpaper-Engine/
 - [x] In-window preferences panel
 - [x] Hover animations on wallpaper cards
 - [x] Performance monitor (battery/fullscreen detection)
-- [ ] Launch at login option
+- [x] Launch at login option (toggle in Preferences, uses SMAppService on macOS 13+)
 - [ ] Additional keyboard shortcuts
 
 ### Phase 6: Advanced Features (May or may not do it)
