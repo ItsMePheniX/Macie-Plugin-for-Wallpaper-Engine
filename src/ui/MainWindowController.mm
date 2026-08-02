@@ -16,14 +16,18 @@
 #import <vector>
 
 // NSCollectionViewDelegate conformance added — previously only DataSource was declared.
-@interface MainWindowController () <NSCollectionViewDataSource, NSCollectionViewDelegate>
+@interface MainWindowController () <NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate>
 @property (strong, nonatomic) NSCollectionView *collectionView;
 @property (strong, nonatomic) NSScrollView *scrollView;
 @property (strong, nonatomic) NSButton *muteButton;
 @property (strong, nonatomic) NSTextField *countLabel;
 @property (strong, nonatomic) AVVideoRenderer *videoRenderer;
 @property (strong, nonatomic) MacieAssetManagerWrapper *assetManager;
+/// Full list loaded from disk — never mutated after loadVideos.
 @property (strong, nonatomic) NSArray<NSDictionary *> *videos;
+/// Subset of videos matching the current search query. Drives the collection view.
+@property (strong, nonatomic) NSArray<NSDictionary *> *filteredVideos;
+@property (strong, nonatomic) NSSearchField *searchField;
 @property (strong, nonatomic) NSView *sidebar;
 @property (strong, nonatomic) NSTextField *appTitleLabel;
 @property (strong, nonatomic) NSTextField *versionLabel;
@@ -166,7 +170,7 @@
     headerBar.layer.backgroundColor = [[NSColor colorWithCalibratedRed:0.11 green:0.11 blue:0.12 alpha:1.0] CGColor];
     [contentView addSubview:headerBar];
 
-    self.contentHeaderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(25, 12, 400, 26)];
+    self.contentHeaderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(25, 12, 250, 26)];
     self.contentHeaderLabel.stringValue = @"All Wallpapers";
     self.contentHeaderLabel.font = [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold];
     self.contentHeaderLabel.textColor = [NSColor whiteColor];
@@ -175,16 +179,27 @@
     self.contentHeaderLabel.backgroundColor = [NSColor clearColor];
     [headerBar addSubview:self.contentHeaderLabel];
 
-    self.countLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(headerBar.bounds.size.width - 150, 15, 130, 20)];
-    self.countLabel.autoresizingMask = NSViewMinXMargin;
+    // Count label sits just to the right of the title — updates with filter results
+    self.countLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(285, 17, 120, 18)];
     self.countLabel.stringValue = @"Loading...";
-    self.countLabel.alignment = NSTextAlignmentRight;
+    self.countLabel.alignment = NSTextAlignmentLeft;
     self.countLabel.editable = NO;
     self.countLabel.bordered = NO;
     self.countLabel.backgroundColor = [NSColor clearColor];
-    self.countLabel.textColor = [NSColor colorWithWhite:0.6 alpha:1.0];
-    self.countLabel.font = [NSFont systemFontOfSize:13];
+    self.countLabel.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+    self.countLabel.font = [NSFont systemFontOfSize:12];
     [headerBar addSubview:self.countLabel];
+
+    // Search field — right side of the header bar, resizes with the window
+    self.searchField = [[NSSearchField alloc] initWithFrame:NSMakeRect(headerBar.bounds.size.width - 235, 10, 220, 30)];
+    self.searchField.autoresizingMask = NSViewMinXMargin;
+    self.searchField.placeholderString = @"Search wallpapers...";
+    self.searchField.delegate = self;
+    self.searchField.target = self;
+    self.searchField.action = @selector(searchFieldChanged:);
+    self.searchField.sendsSearchStringImmediately = YES;
+    [headerBar addSubview:self.searchField];
+
 
     // Main content container
     self.mainContentArea = [[NSView alloc] initWithFrame:NSMakeRect(kSidebarWidth, 0, contentView.bounds.size.width - kSidebarWidth, contentView.bounds.size.height - kHeaderHeight)];
@@ -381,16 +396,22 @@
     }
     self.contentHeaderLabel.stringValue = @"All Wallpapers";
     self.countLabel.hidden = NO;
+    self.searchField.hidden = NO;
     [self updateMenuButtonSelection:self.allWallpapersButton];
 }
 
 - (void)showPreferencesView {
+    // Clear any active search so returning to the gallery shows everything
+    [self applySearchFilter:@""];
+    [self.searchField setStringValue:@""];
+
     [self.galleryView removeFromSuperview];
     if (!self.preferencesView.superview) {
         [self.mainContentArea addSubview:self.preferencesView];
     }
     self.contentHeaderLabel.stringValue = @"Preferences";
     self.countLabel.hidden = YES;
+    self.searchField.hidden = YES;
     [self updateMenuButtonSelection:self.preferencesButton];
 }
 
@@ -515,9 +536,12 @@
     }
 
     self.videos = [videoArray copy];
+    // On load (or reload) clear any active search and show everything
+    self.filteredVideos = self.videos;
+    [self.searchField setStringValue:@""];
     [self.collectionView reloadData];
 
-    self.countLabel.stringValue = [NSString stringWithFormat:@"%lu videos", (unsigned long)self.videos.count];
+    [self updateCountLabel];
 
     // Update statistics in sidebar
     NSString *statsText = [NSString stringWithFormat:@"Total Wallpapers: %lu\nCurrently Playing:\n%@",
@@ -532,7 +556,7 @@
 #pragma mark - NSCollectionViewDataSource
 
 - (NSInteger)collectionView:(NSCollectionView *)collectionView numberOfItemsInSection:(NSInteger)section {
-    return self.videos.count;
+    return self.filteredVideos.count;
 }
 
 - (NSCollectionViewItem *)collectionView:(NSCollectionView *)collectionView
@@ -540,7 +564,7 @@
 
     VideoCollectionItem *item = [collectionView makeItemWithIdentifier:@"VideoItem" forIndexPath:indexPath];
 
-    NSDictionary *video = self.videos[indexPath.item];
+    NSDictionary *video = self.filteredVideos[indexPath.item];
     [item configureWithVideoData:video];
 
     return item;
@@ -551,7 +575,7 @@
 - (void)collectionView:(NSCollectionView *)collectionView didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
     NSIndexPath *indexPath = indexPaths.anyObject;
     if (indexPath) {
-        NSDictionary *video = self.videos[indexPath.item];
+        NSDictionary *video = self.filteredVideos[indexPath.item];
         NSString *videoPath = video[@"path"];
         NSString *videoTitle = video[@"title"];
         NSString *videoId = video[@"id"];
@@ -579,6 +603,43 @@
             self.statsLabel.stringValue = statsText;
         }
     }
+}
+
+#pragma mark - Search
+
+- (void)updateCountLabel {
+    if (self.filteredVideos.count == self.videos.count) {
+        self.countLabel.stringValue = [NSString stringWithFormat:@"%lu videos", (unsigned long)self.videos.count];
+    } else {
+        self.countLabel.stringValue = [NSString stringWithFormat:@"%lu of %lu",
+                                      (unsigned long)self.filteredVideos.count,
+                                      (unsigned long)self.videos.count];
+    }
+}
+
+/// Target/action entry point — called by the search field on every keystroke.
+- (void)searchFieldChanged:(NSSearchField *)sender {
+    [self applySearchFilter:sender.stringValue];
+}
+
+/// NSSearchFieldDelegate — also fires on every keystroke via controlTextDidChange:.
+- (void)controlTextDidChange:(NSNotification *)notification {
+    if (notification.object == self.searchField) {
+        [self applySearchFilter:self.searchField.stringValue];
+    }
+}
+
+/// Filters self.videos by a case-insensitive title match and refreshes the collection view.
+/// An empty query restores the full list.
+- (void)applySearchFilter:(NSString *)query {
+    if (query.length == 0) {
+        self.filteredVideos = self.videos;
+    } else {
+        NSPredicate *predicate = [NSPredicate predicateWithFormat:@"title CONTAINS[cd] %@", query];
+        self.filteredVideos = [self.videos filteredArrayUsingPredicate:predicate];
+    }
+    [self.collectionView reloadData];
+    [self updateCountLabel];
 }
 
 #pragma mark - Actions
