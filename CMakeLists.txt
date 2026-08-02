@@ -52,6 +52,9 @@ set(SOURCES
     src/ui/VideoCollectionItem.m
     src/ui/WelcomeWindowController.m
     src/ui/PreferencesWindowController.m
+
+    # Resources
+    resources/AppIcon.icns
 )
 
 # Header files
@@ -100,6 +103,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0"
     MACOSX_BUNDLE_COPYRIGHT "Copyright © 2026. All rights reserved."
+    MACOSX_BUNDLE_ICON_FILE "AppIcon"
     XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ""
     XCODE_ATTRIBUTE_CODE_SIGN_REQUIRED "NO"
+)
+
+# Mark the icns as a bundle resource so CMake copies it into Contents/Resources
+set_source_files_properties(resources/AppIcon.icns PROPERTIES
+    MACOSX_PACKAGE_LOCATION "Resources"
 )
