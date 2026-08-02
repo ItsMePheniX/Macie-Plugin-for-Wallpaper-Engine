@@ -6,663 +6,822 @@
 //
 
 #import "MainWindowController.h"
-#import "VideoCollectionItem.h"
 #import "AVVideoRenderer.h"
-#import "MacieAssetManagerWrapper.h"
 #import "Constants.h"
+#import "MacieAssetManagerWrapper.h"
 #import "ThumbnailCache.h"
+#import "VideoCollectionItem.h"
 #import <AVFoundation/AVFoundation.h>
 #import <ServiceManagement/ServiceManagement.h>
 #import <vector>
 
-// NSCollectionViewDelegate conformance added — previously only DataSource was declared.
-@interface MainWindowController () <NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate>
-@property (strong, nonatomic) NSCollectionView *collectionView;
-@property (strong, nonatomic) NSScrollView *scrollView;
-@property (strong, nonatomic) NSButton *muteButton;
-@property (strong, nonatomic) NSTextField *countLabel;
-@property (strong, nonatomic) AVVideoRenderer *videoRenderer;
-@property (strong, nonatomic) MacieAssetManagerWrapper *assetManager;
+// NSCollectionViewDelegate conformance added — previously only DataSource was
+// declared.
+@interface MainWindowController () <
+    NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate>
+@property(strong, nonatomic) NSCollectionView *collectionView;
+@property(strong, nonatomic) NSScrollView *scrollView;
+@property(strong, nonatomic) NSButton *muteButton;
+@property(strong, nonatomic) NSTextField *countLabel;
+@property(strong, nonatomic) AVVideoRenderer *videoRenderer;
+@property(strong, nonatomic) MacieAssetManagerWrapper *assetManager;
 /// Full list loaded from disk — never mutated after loadVideos.
-@property (strong, nonatomic) NSArray<NSDictionary *> *videos;
-/// Subset of videos matching the current search query. Drives the collection view.
-@property (strong, nonatomic) NSArray<NSDictionary *> *filteredVideos;
-@property (strong, nonatomic) NSSearchField *searchField;
-@property (strong, nonatomic) NSView *sidebar;
-@property (strong, nonatomic) NSTextField *appTitleLabel;
-@property (strong, nonatomic) NSTextField *versionLabel;
-@property (strong, nonatomic) NSButton *allWallpapersButton;
-@property (strong, nonatomic) NSButton *preferencesButton;
-@property (strong, nonatomic) NSTextField *statsLabel;
-@property (strong, nonatomic) NSView *mainContentArea;
-@property (strong, nonatomic) NSView *galleryView;
-@property (strong, nonatomic) NSView *preferencesView;
-@property (strong, nonatomic) NSTextField *contentHeaderLabel;
-@property (strong, nonatomic) NSTextField *cacheSizeLabel;
+@property(strong, nonatomic) NSArray<NSDictionary *> *videos;
+/// Subset of videos matching the current search query. Drives the collection
+/// view.
+@property(strong, nonatomic) NSArray<NSDictionary *> *filteredVideos;
+@property(strong, nonatomic) NSSearchField *searchField;
+@property(strong, nonatomic) NSView *sidebar;
+@property(strong, nonatomic) NSTextField *appTitleLabel;
+@property(strong, nonatomic) NSTextField *versionLabel;
+@property(strong, nonatomic) NSButton *allWallpapersButton;
+@property(strong, nonatomic) NSButton *preferencesButton;
+@property(strong, nonatomic) NSTextField *statsLabel;
+@property(strong, nonatomic) NSView *mainContentArea;
+@property(strong, nonatomic) NSView *galleryView;
+@property(strong, nonatomic) NSView *preferencesView;
+@property(strong, nonatomic) NSTextField *contentHeaderLabel;
+@property(strong, nonatomic) NSTextField *cacheSizeLabel;
 @end
 
 @implementation MainWindowController
 
 - (instancetype)initWithAssetManager:(MacieAssetManagerWrapper *)assetManager
                        videoRenderer:(AVVideoRenderer *)renderer {
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, kMainWindowWidth, kMainWindowHeight)
-                                                   styleMask:(NSWindowStyleMaskTitled |
-                                                             NSWindowStyleMaskClosable |
-                                                             NSWindowStyleMaskMiniaturizable |
-                                                             NSWindowStyleMaskResizable)
-                                                     backing:NSBackingStoreBuffered
-                                                       defer:NO];
+  NSWindow *window = [[NSWindow alloc]
+      initWithContentRect:NSMakeRect(100, 100, kMainWindowWidth,
+                                     kMainWindowHeight)
+                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                           NSWindowStyleMaskMiniaturizable |
+                           NSWindowStyleMaskResizable)
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
 
-    self = [super initWithWindow:window];
-    if (self) {
-        self.assetManager = assetManager;
-        self.videoRenderer = renderer;
-        [self setupWindow];
-        [self loadVideos];
-    }
-    return self;
+  self = [super initWithWindow:window];
+  if (self) {
+    self.assetManager = assetManager;
+    self.videoRenderer = renderer;
+    [self setupWindow];
+    [self loadVideos];
+  }
+  return self;
 }
 
 - (void)setupWindow {
-    self.window.title = kAppName;
-    self.window.minSize = NSMakeSize(kMainWindowMinWidth, kMainWindowMinHeight);
+  self.window.title = kAppName;
+  self.window.minSize = NSMakeSize(kMainWindowMinWidth, kMainWindowMinHeight);
 
-    NSView *contentView = self.window.contentView;
+  NSView *contentView = self.window.contentView;
 
-    // Sidebar with dark theme
-    self.sidebar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kSidebarWidth, contentView.bounds.size.height)];
-    self.sidebar.autoresizingMask = NSViewHeightSizable;
-    self.sidebar.wantsLayer = YES;
-    self.sidebar.layer.backgroundColor = [[NSColor colorWithCalibratedRed:0.12 green:0.12 blue:0.14 alpha:1.0] CGColor];
-    [contentView addSubview:self.sidebar];
+  // Sidebar with dark theme
+  self.sidebar =
+      [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kSidebarWidth,
+                                               contentView.bounds.size.height)];
+  self.sidebar.autoresizingMask = NSViewHeightSizable;
+  self.sidebar.wantsLayer = YES;
+  self.sidebar.layer.backgroundColor =
+      [[NSColor colorWithCalibratedRed:0.12 green:0.12 blue:0.14
+                                 alpha:1.0] CGColor];
+  [contentView addSubview:self.sidebar];
 
-    // App Title
-    self.appTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, contentView.bounds.size.height - 55, 190, 30)];
-    self.appTitleLabel.stringValue = kAppName;
-    self.appTitleLabel.font = [NSFont systemFontOfSize:18 weight:NSFontWeightBold];
-    self.appTitleLabel.textColor = [NSColor whiteColor];
-    self.appTitleLabel.alignment = NSTextAlignmentLeft;
-    self.appTitleLabel.editable = NO;
-    self.appTitleLabel.bordered = NO;
-    self.appTitleLabel.backgroundColor = [NSColor clearColor];
-    self.appTitleLabel.autoresizingMask = NSViewMinYMargin;
-    [self.sidebar addSubview:self.appTitleLabel];
+  // App Title
+  self.appTitleLabel = [[NSTextField alloc]
+      initWithFrame:NSMakeRect(15, contentView.bounds.size.height - 55, 190,
+                               30)];
+  self.appTitleLabel.stringValue = kAppName;
+  self.appTitleLabel.font = [NSFont systemFontOfSize:18
+                                              weight:NSFontWeightBold];
+  self.appTitleLabel.textColor = [NSColor whiteColor];
+  self.appTitleLabel.alignment = NSTextAlignmentLeft;
+  self.appTitleLabel.editable = NO;
+  self.appTitleLabel.bordered = NO;
+  self.appTitleLabel.backgroundColor = [NSColor clearColor];
+  self.appTitleLabel.autoresizingMask = NSViewMinYMargin;
+  [self.sidebar addSubview:self.appTitleLabel];
 
-    // Version Label
-    self.versionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, contentView.bounds.size.height - 75, 190, 16)];
-    self.versionLabel.stringValue = [NSString stringWithFormat:@"v%@", kAppVersion];
-    self.versionLabel.font = [NSFont systemFontOfSize:11];
-    self.versionLabel.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
-    self.versionLabel.alignment = NSTextAlignmentLeft;
-    self.versionLabel.editable = NO;
-    self.versionLabel.bordered = NO;
-    self.versionLabel.backgroundColor = [NSColor clearColor];
-    self.versionLabel.autoresizingMask = NSViewMinYMargin;
-    [self.sidebar addSubview:self.versionLabel];
+  // Version Label
+  self.versionLabel = [[NSTextField alloc]
+      initWithFrame:NSMakeRect(15, contentView.bounds.size.height - 75, 190,
+                               16)];
+  self.versionLabel.stringValue =
+      [NSString stringWithFormat:@"v%@", kAppVersion];
+  self.versionLabel.font = [NSFont systemFontOfSize:11];
+  self.versionLabel.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+  self.versionLabel.alignment = NSTextAlignmentLeft;
+  self.versionLabel.editable = NO;
+  self.versionLabel.bordered = NO;
+  self.versionLabel.backgroundColor = [NSColor clearColor];
+  self.versionLabel.autoresizingMask = NSViewMinYMargin;
+  [self.sidebar addSubview:self.versionLabel];
 
-    // Navigation Section
-    NSView *navDivider = [[NSView alloc] initWithFrame:NSMakeRect(15, contentView.bounds.size.height - 95, 190, 1)];
-    navDivider.wantsLayer = YES;
-    navDivider.layer.backgroundColor = [[NSColor colorWithWhite:0.25 alpha:1.0] CGColor];
-    navDivider.autoresizingMask = NSViewMinYMargin;
-    [self.sidebar addSubview:navDivider];
+  // Navigation Section
+  NSView *navDivider = [[NSView alloc]
+      initWithFrame:NSMakeRect(15, contentView.bounds.size.height - 95, 190,
+                               1)];
+  navDivider.wantsLayer = YES;
+  navDivider.layer.backgroundColor = [[NSColor colorWithWhite:0.25
+                                                        alpha:1.0] CGColor];
+  navDivider.autoresizingMask = NSViewMinYMargin;
+  [self.sidebar addSubview:navDivider];
 
-    NSTextField *navLabel = [self createSectionLabel:@"NAVIGATION" yPos:contentView.bounds.size.height - 115];
-    [self.sidebar addSubview:navLabel];
+  NSTextField *navLabel =
+      [self createSectionLabel:@"NAVIGATION"
+                          yPos:contentView.bounds.size.height - 115];
+  [self.sidebar addSubview:navLabel];
 
-    // All Wallpapers Button
-    self.allWallpapersButton = [self createMenuButton:@"All Wallpapers"
-                                                 yPos:contentView.bounds.size.height - 145
-                                               action:@selector(showAllWallpapers:)
-                                             selected:YES];
-    [self.sidebar addSubview:self.allWallpapersButton];
+  // All Wallpapers Button
+  self.allWallpapersButton =
+      [self createMenuButton:@"All Wallpapers"
+                        yPos:contentView.bounds.size.height - 145
+                      action:@selector(showAllWallpapers:)
+                    selected:YES];
+  [self.sidebar addSubview:self.allWallpapersButton];
 
-    // Preferences Button
-    self.preferencesButton = [self createMenuButton:@"Preferences"
-                                               yPos:contentView.bounds.size.height - 182
-                                             action:@selector(openPreferences:)
-                                           selected:NO];
-    [self.sidebar addSubview:self.preferencesButton];
+  // Preferences Button
+  self.preferencesButton =
+      [self createMenuButton:@"Preferences"
+                        yPos:contentView.bounds.size.height - 182
+                      action:@selector(openPreferences:)
+                    selected:NO];
+  [self.sidebar addSubview:self.preferencesButton];
 
-    // Now Playing Section
-    NSView *statsDivider = [[NSView alloc] initWithFrame:NSMakeRect(15, 195, 190, 1)];
-    statsDivider.wantsLayer = YES;
-    statsDivider.layer.backgroundColor = [[NSColor colorWithWhite:0.25 alpha:1.0] CGColor];
-    [self.sidebar addSubview:statsDivider];
+  // Now Playing Section
+  NSView *statsDivider =
+      [[NSView alloc] initWithFrame:NSMakeRect(15, 195, 190, 1)];
+  statsDivider.wantsLayer = YES;
+  statsDivider.layer.backgroundColor = [[NSColor colorWithWhite:0.25
+                                                          alpha:1.0] CGColor];
+  [self.sidebar addSubview:statsDivider];
 
-    NSTextField *statsHeaderLabel = [self createSectionLabel:@"NOW PLAYING" yPos:170];
-    [self.sidebar addSubview:statsHeaderLabel];
+  NSTextField *statsHeaderLabel = [self createSectionLabel:@"NOW PLAYING"
+                                                      yPos:170];
+  [self.sidebar addSubview:statsHeaderLabel];
 
-    self.statsLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(15, 95, 190, 70)];
-    self.statsLabel.stringValue = @"Loading...";
-    self.statsLabel.font = [NSFont systemFontOfSize:12];
-    self.statsLabel.textColor = [NSColor colorWithWhite:0.8 alpha:1.0];
-    self.statsLabel.alignment = NSTextAlignmentLeft;
-    self.statsLabel.editable = NO;
-    self.statsLabel.bordered = NO;
-    self.statsLabel.backgroundColor = [NSColor clearColor];
-    self.statsLabel.lineBreakMode = NSLineBreakByWordWrapping;
-    [self.sidebar addSubview:self.statsLabel];
+  self.statsLabel =
+      [[NSTextField alloc] initWithFrame:NSMakeRect(15, 95, 190, 70)];
+  self.statsLabel.stringValue = @"Loading...";
+  self.statsLabel.font = [NSFont systemFontOfSize:12];
+  self.statsLabel.textColor = [NSColor colorWithWhite:0.8 alpha:1.0];
+  self.statsLabel.alignment = NSTextAlignmentLeft;
+  self.statsLabel.editable = NO;
+  self.statsLabel.bordered = NO;
+  self.statsLabel.backgroundColor = [NSColor clearColor];
+  self.statsLabel.lineBreakMode = NSLineBreakByWordWrapping;
+  [self.sidebar addSubview:self.statsLabel];
 
-    // Audio Control Section
-    NSView *audioDivider = [[NSView alloc] initWithFrame:NSMakeRect(15, 80, 190, 1)];
-    audioDivider.wantsLayer = YES;
-    audioDivider.layer.backgroundColor = [[NSColor colorWithWhite:0.25 alpha:1.0] CGColor];
-    [self.sidebar addSubview:audioDivider];
+  // Audio Control Section
+  NSView *audioDivider =
+      [[NSView alloc] initWithFrame:NSMakeRect(15, 80, 190, 1)];
+  audioDivider.wantsLayer = YES;
+  audioDivider.layer.backgroundColor = [[NSColor colorWithWhite:0.25
+                                                          alpha:1.0] CGColor];
+  [self.sidebar addSubview:audioDivider];
 
-    NSTextField *audioLabel = [self createSectionLabel:@"AUDIO" yPos:55];
-    [self.sidebar addSubview:audioLabel];
+  NSTextField *audioLabel = [self createSectionLabel:@"AUDIO" yPos:55];
+  [self.sidebar addSubview:audioLabel];
 
-    self.muteButton = [[NSButton alloc] initWithFrame:NSMakeRect(15, 12, 190, 32)];
-    [self.muteButton setButtonType:NSButtonTypeMomentaryPushIn];
-    [self.muteButton setBezelStyle:NSBezelStyleRounded];
-    self.muteButton.wantsLayer = YES;
-    self.muteButton.layer.cornerRadius = 6;
-    [self updateMuteButton];
-    self.muteButton.target = self;
-    self.muteButton.action = @selector(toggleMute:);
-    [self.sidebar addSubview:self.muteButton];
+  self.muteButton =
+      [[NSButton alloc] initWithFrame:NSMakeRect(15, 12, 190, 32)];
+  [self.muteButton setButtonType:NSButtonTypeMomentaryPushIn];
+  [self.muteButton setBezelStyle:NSBezelStyleRounded];
+  self.muteButton.wantsLayer = YES;
+  self.muteButton.layer.cornerRadius = 6;
+  [self updateMuteButton];
+  self.muteButton.target = self;
+  self.muteButton.action = @selector(toggleMute:);
+  [self.sidebar addSubview:self.muteButton];
 
-    // Main content area header
-    NSView *headerBar = [[NSView alloc] initWithFrame:NSMakeRect(kSidebarWidth, contentView.bounds.size.height - kHeaderHeight, contentView.bounds.size.width - kSidebarWidth, kHeaderHeight)];
-    headerBar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    headerBar.wantsLayer = YES;
-    headerBar.layer.backgroundColor = [[NSColor colorWithCalibratedRed:0.11 green:0.11 blue:0.12 alpha:1.0] CGColor];
-    [contentView addSubview:headerBar];
+  // Main content area header
+  NSView *headerBar = [[NSView alloc]
+      initWithFrame:NSMakeRect(kSidebarWidth,
+                               contentView.bounds.size.height - kHeaderHeight,
+                               contentView.bounds.size.width - kSidebarWidth,
+                               kHeaderHeight)];
+  headerBar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  headerBar.wantsLayer = YES;
+  headerBar.layer.backgroundColor =
+      [[NSColor colorWithCalibratedRed:0.11 green:0.11 blue:0.12
+                                 alpha:1.0] CGColor];
+  [contentView addSubview:headerBar];
 
-    self.contentHeaderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(25, 12, 250, 26)];
-    self.contentHeaderLabel.stringValue = @"All Wallpapers";
-    self.contentHeaderLabel.font = [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold];
-    self.contentHeaderLabel.textColor = [NSColor whiteColor];
-    self.contentHeaderLabel.editable = NO;
-    self.contentHeaderLabel.bordered = NO;
-    self.contentHeaderLabel.backgroundColor = [NSColor clearColor];
-    [headerBar addSubview:self.contentHeaderLabel];
+  self.contentHeaderLabel =
+      [[NSTextField alloc] initWithFrame:NSMakeRect(25, 12, 250, 26)];
+  self.contentHeaderLabel.stringValue = @"All Wallpapers";
+  self.contentHeaderLabel.font = [NSFont systemFontOfSize:20
+                                                   weight:NSFontWeightSemibold];
+  self.contentHeaderLabel.textColor = [NSColor whiteColor];
+  self.contentHeaderLabel.editable = NO;
+  self.contentHeaderLabel.bordered = NO;
+  self.contentHeaderLabel.backgroundColor = [NSColor clearColor];
+  [headerBar addSubview:self.contentHeaderLabel];
 
-    // Count label sits just to the right of the title — updates with filter results
-    self.countLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(285, 17, 120, 18)];
-    self.countLabel.stringValue = @"Loading...";
-    self.countLabel.alignment = NSTextAlignmentLeft;
-    self.countLabel.editable = NO;
-    self.countLabel.bordered = NO;
-    self.countLabel.backgroundColor = [NSColor clearColor];
-    self.countLabel.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
-    self.countLabel.font = [NSFont systemFontOfSize:12];
-    [headerBar addSubview:self.countLabel];
+  // Count label sits just to the right of the title — updates with filter
+  // results
+  self.countLabel =
+      [[NSTextField alloc] initWithFrame:NSMakeRect(285, 17, 120, 18)];
+  self.countLabel.stringValue = @"Loading...";
+  self.countLabel.alignment = NSTextAlignmentLeft;
+  self.countLabel.editable = NO;
+  self.countLabel.bordered = NO;
+  self.countLabel.backgroundColor = [NSColor clearColor];
+  self.countLabel.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+  self.countLabel.font = [NSFont systemFontOfSize:12];
+  [headerBar addSubview:self.countLabel];
 
-    // Search field — right side of the header bar, resizes with the window
-    self.searchField = [[NSSearchField alloc] initWithFrame:NSMakeRect(headerBar.bounds.size.width - 235, 10, 220, 30)];
-    self.searchField.autoresizingMask = NSViewMinXMargin;
-    self.searchField.placeholderString = @"Search wallpapers...";
-    self.searchField.delegate = self;
-    self.searchField.target = self;
-    self.searchField.action = @selector(searchFieldChanged:);
-    self.searchField.sendsSearchStringImmediately = YES;
-    [headerBar addSubview:self.searchField];
+  // Search field — right side of the header bar, resizes with the window
+  self.searchField = [[NSSearchField alloc]
+      initWithFrame:NSMakeRect(headerBar.bounds.size.width - 235, 10, 220, 30)];
+  self.searchField.autoresizingMask = NSViewMinXMargin;
+  self.searchField.placeholderString = @"Search wallpapers...";
+  self.searchField.delegate = self;
+  self.searchField.target = self;
+  self.searchField.action = @selector(searchFieldChanged:);
+  self.searchField.sendsSearchStringImmediately = YES;
+  [headerBar addSubview:self.searchField];
 
+  // Main content container
+  self.mainContentArea = [[NSView alloc]
+      initWithFrame:NSMakeRect(kSidebarWidth, 0,
+                               contentView.bounds.size.width - kSidebarWidth,
+                               contentView.bounds.size.height - kHeaderHeight)];
+  self.mainContentArea.autoresizingMask =
+      NSViewWidthSizable | NSViewHeightSizable;
+  [contentView addSubview:self.mainContentArea];
 
-    // Main content container
-    self.mainContentArea = [[NSView alloc] initWithFrame:NSMakeRect(kSidebarWidth, 0, contentView.bounds.size.width - kSidebarWidth, contentView.bounds.size.height - kHeaderHeight)];
-    self.mainContentArea.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    [contentView addSubview:self.mainContentArea];
+  // Setup different content views
+  [self setupGalleryView];
+  [self setupPreferencesView];
 
-    // Setup different content views
-    [self setupGalleryView];
-    [self setupPreferencesView];
-
-    // Show gallery view by default
-    [self showGalleryView];
+  // Show gallery view by default
+  [self showGalleryView];
 }
 
 - (void)setupGalleryView {
-    self.galleryView = [[NSView alloc] initWithFrame:self.mainContentArea.bounds];
-    self.galleryView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  self.galleryView = [[NSView alloc] initWithFrame:self.mainContentArea.bounds];
+  self.galleryView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 
-    NSCollectionViewFlowLayout *layout = [[NSCollectionViewFlowLayout alloc] init];
-    layout.itemSize = NSMakeSize(kThumbnailWidth, kThumbnailHeight);
-    layout.sectionInset = NSEdgeInsetsMake(kGridSpacing, kGridSpacing + 5, kGridSpacing, kGridSpacing);
-    layout.minimumInteritemSpacing = kGridSpacing;
-    layout.minimumLineSpacing = kGridSpacing;
+  NSCollectionViewFlowLayout *layout =
+      [[NSCollectionViewFlowLayout alloc] init];
+  layout.itemSize = NSMakeSize(kThumbnailWidth, kThumbnailHeight);
+  layout.sectionInset = NSEdgeInsetsMake(kGridSpacing, kGridSpacing + 5,
+                                         kGridSpacing, kGridSpacing);
+  layout.minimumInteritemSpacing = kGridSpacing;
+  layout.minimumLineSpacing = kGridSpacing;
 
-    self.collectionView = [[NSCollectionView alloc] initWithFrame:self.galleryView.bounds];
-    self.collectionView.collectionViewLayout = layout;
-    self.collectionView.delegate = self;
-    self.collectionView.dataSource = self;
-    self.collectionView.backgroundColors = @[[NSColor colorWithCalibratedRed:0.11 green:0.11 blue:0.12 alpha:1.0]];
-    self.collectionView.selectable = YES;
+  self.collectionView =
+      [[NSCollectionView alloc] initWithFrame:self.galleryView.bounds];
+  self.collectionView.collectionViewLayout = layout;
+  self.collectionView.delegate = self;
+  self.collectionView.dataSource = self;
+  self.collectionView.backgroundColors =
+      @[ [NSColor colorWithCalibratedRed:0.11 green:0.11 blue:0.12 alpha:1.0] ];
+  self.collectionView.selectable = YES;
 
-    [self.collectionView registerClass:[VideoCollectionItem class] forItemWithIdentifier:@"VideoItem"];
+  [self.collectionView registerClass:[VideoCollectionItem class]
+               forItemWithIdentifier:@"VideoItem"];
 
-    self.scrollView = [[NSScrollView alloc] initWithFrame:self.galleryView.bounds];
-    self.scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    self.scrollView.documentView = self.collectionView;
-    self.scrollView.hasVerticalScroller = YES;
-    self.scrollView.hasHorizontalScroller = NO;
+  self.scrollView =
+      [[NSScrollView alloc] initWithFrame:self.galleryView.bounds];
+  self.scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  self.scrollView.documentView = self.collectionView;
+  self.scrollView.hasVerticalScroller = YES;
+  self.scrollView.hasHorizontalScroller = NO;
 
-    [self.galleryView addSubview:self.scrollView];
+  [self.galleryView addSubview:self.scrollView];
 }
 
 - (void)setupPreferencesView {
-    self.preferencesView = [[NSView alloc] initWithFrame:self.mainContentArea.bounds];
-    self.preferencesView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    self.preferencesView.wantsLayer = YES;
-    self.preferencesView.layer.backgroundColor = [[NSColor colorWithCalibratedRed:0.11 green:0.11 blue:0.12 alpha:1.0] CGColor];
+  self.preferencesView =
+      [[NSView alloc] initWithFrame:self.mainContentArea.bounds];
+  self.preferencesView.autoresizingMask =
+      NSViewWidthSizable | NSViewHeightSizable;
+  self.preferencesView.wantsLayer = YES;
+  self.preferencesView.layer.backgroundColor =
+      [[NSColor colorWithCalibratedRed:0.11 green:0.11 blue:0.12
+                                 alpha:1.0] CGColor];
 
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    CGFloat leftPadding = 15;
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  CGFloat leftPadding = 15;
 
-    // Path Section
-    NSBox *pathSection = [[NSBox alloc] initWithFrame:NSMakeRect(30, self.preferencesView.bounds.size.height - 170, self.preferencesView.bounds.size.width - 60, 120)];
-    pathSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    pathSection.title = @"Wallpaper Location";
-    pathSection.titlePosition = NSAtTop;
+  // Path Section
+  NSBox *pathSection = [[NSBox alloc]
+      initWithFrame:NSMakeRect(
+                        30, self.preferencesView.bounds.size.height - 170,
+                        self.preferencesView.bounds.size.width - 60, 120)];
+  pathSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  pathSection.title = @"Wallpaper Location";
+  pathSection.titlePosition = NSAtTop;
 
-    NSView *pathContent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, pathSection.bounds.size.width - 20, 90)];
+  NSView *pathContent = [[NSView alloc]
+      initWithFrame:NSMakeRect(0, 0, pathSection.bounds.size.width - 20, 90)];
 
-    NSTextField *currentPathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftPadding, 55, pathContent.bounds.size.width - leftPadding * 2, 18)];
-    currentPathLabel.stringValue = @"Current Steam Folder:";
-    currentPathLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
-    currentPathLabel.textColor = [NSColor colorWithWhite:0.85 alpha:1.0];
-    currentPathLabel.editable = NO;
-    currentPathLabel.bordered = NO;
-    currentPathLabel.backgroundColor = [NSColor clearColor];
-    [pathContent addSubview:currentPathLabel];
+  NSTextField *currentPathLabel = [[NSTextField alloc]
+      initWithFrame:NSMakeRect(leftPadding, 55,
+                               pathContent.bounds.size.width - leftPadding * 2,
+                               18)];
+  currentPathLabel.stringValue = @"Current Steam Folder:";
+  currentPathLabel.font = [NSFont systemFontOfSize:12
+                                            weight:NSFontWeightMedium];
+  currentPathLabel.textColor = [NSColor colorWithWhite:0.85 alpha:1.0];
+  currentPathLabel.editable = NO;
+  currentPathLabel.bordered = NO;
+  currentPathLabel.backgroundColor = [NSColor clearColor];
+  [pathContent addSubview:currentPathLabel];
 
-    NSString *currentPath = [defaults stringForKey:kDefaultsSteamappsPath];
+  NSString *currentPath = [defaults stringForKey:kDefaultsSteamappsPath];
 
-    NSTextField *pathValueLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftPadding, 30, pathContent.bounds.size.width - leftPadding * 2, 22)];
-    pathValueLabel.stringValue = currentPath ? currentPath : @"No path set";
-    pathValueLabel.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-    pathValueLabel.textColor = currentPath ? [NSColor systemGreenColor] : [NSColor systemRedColor];
-    pathValueLabel.editable = NO;
-    pathValueLabel.bordered = NO;
-    pathValueLabel.backgroundColor = [NSColor colorWithCalibratedRed:0.08 green:0.08 blue:0.09 alpha:1.0];
-    pathValueLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    pathValueLabel.drawsBackground = YES;
-    pathValueLabel.autoresizingMask = NSViewWidthSizable;
-    pathValueLabel.wantsLayer = YES;
-    pathValueLabel.layer.cornerRadius = 4;
-    [pathContent addSubview:pathValueLabel];
+  NSTextField *pathValueLabel = [[NSTextField alloc]
+      initWithFrame:NSMakeRect(leftPadding, 30,
+                               pathContent.bounds.size.width - leftPadding * 2,
+                               22)];
+  pathValueLabel.stringValue = currentPath ? currentPath : @"No path set";
+  pathValueLabel.font = [NSFont monospacedSystemFontOfSize:11
+                                                    weight:NSFontWeightRegular];
+  pathValueLabel.textColor =
+      currentPath ? [NSColor systemGreenColor] : [NSColor systemRedColor];
+  pathValueLabel.editable = NO;
+  pathValueLabel.bordered = NO;
+  pathValueLabel.backgroundColor = [NSColor colorWithCalibratedRed:0.08
+                                                             green:0.08
+                                                              blue:0.09
+                                                             alpha:1.0];
+  pathValueLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+  pathValueLabel.drawsBackground = YES;
+  pathValueLabel.autoresizingMask = NSViewWidthSizable;
+  pathValueLabel.wantsLayer = YES;
+  pathValueLabel.layer.cornerRadius = 4;
+  [pathContent addSubview:pathValueLabel];
 
-    NSButton *changePathButton = [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 2, 180, 24)];
-    changePathButton.title = @"Change Steam Folder...";
-    changePathButton.bezelStyle = NSBezelStyleRounded;
-    changePathButton.target = self;
-    changePathButton.action = @selector(changePathFromPreferences:);
-    [pathContent addSubview:changePathButton];
+  NSButton *changePathButton =
+      [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 2, 180, 24)];
+  changePathButton.title = @"Change Steam Folder...";
+  changePathButton.bezelStyle = NSBezelStyleRounded;
+  changePathButton.target = self;
+  changePathButton.action = @selector(changePathFromPreferences:);
+  [pathContent addSubview:changePathButton];
 
-    pathSection.contentView = pathContent;
-    [self.preferencesView addSubview:pathSection];
+  pathSection.contentView = pathContent;
+  [self.preferencesView addSubview:pathSection];
 
-    // Performance Section
-    NSBox *perfSection = [[NSBox alloc] initWithFrame:NSMakeRect(30, self.preferencesView.bounds.size.height - 320, self.preferencesView.bounds.size.width - 60, 130)];
-    perfSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    perfSection.title = @"Performance";
-    perfSection.titlePosition = NSAtTop;
+  // Performance Section
+  NSBox *perfSection = [[NSBox alloc]
+      initWithFrame:NSMakeRect(
+                        30, self.preferencesView.bounds.size.height - 320,
+                        self.preferencesView.bounds.size.width - 60, 130)];
+  perfSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  perfSection.title = @"Performance";
+  perfSection.titlePosition = NSAtTop;
 
-    NSView *perfContent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, perfSection.bounds.size.width - 20, 100)];
+  NSView *perfContent = [[NSView alloc]
+      initWithFrame:NSMakeRect(0, 0, perfSection.bounds.size.width - 20, 100)];
 
-    BOOL pauseOnBattery = [defaults boolForKey:kDefaultsPauseOnBattery];
-    NSButton *batteryCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 65, perfContent.bounds.size.width - leftPadding * 2, 20)];
-    [batteryCheckbox setButtonType:NSButtonTypeSwitch];
-    batteryCheckbox.title = @"Pause wallpaper when on battery power";
-    batteryCheckbox.state = pauseOnBattery ? NSControlStateValueOn : NSControlStateValueOff;
-    batteryCheckbox.target = self;
-    batteryCheckbox.action = @selector(pauseOnBatteryChanged:);
-    [perfContent addSubview:batteryCheckbox];
+  BOOL pauseOnBattery = [defaults boolForKey:kDefaultsPauseOnBattery];
+  NSButton *batteryCheckbox = [[NSButton alloc]
+      initWithFrame:NSMakeRect(leftPadding, 65,
+                               perfContent.bounds.size.width - leftPadding * 2,
+                               20)];
+  [batteryCheckbox setButtonType:NSButtonTypeSwitch];
+  batteryCheckbox.title = @"Pause wallpaper when on battery power";
+  batteryCheckbox.state =
+      pauseOnBattery ? NSControlStateValueOn : NSControlStateValueOff;
+  batteryCheckbox.target = self;
+  batteryCheckbox.action = @selector(pauseOnBatteryChanged:);
+  [perfContent addSubview:batteryCheckbox];
 
-    BOOL pauseOnFullscreen = [defaults boolForKey:kDefaultsPauseOnFullscreen];
-    NSButton *fullscreenCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 40, perfContent.bounds.size.width - leftPadding * 2, 20)];
-    [fullscreenCheckbox setButtonType:NSButtonTypeSwitch];
-    fullscreenCheckbox.title = @"Pause wallpaper when apps are fullscreen";
-    fullscreenCheckbox.state = pauseOnFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
-    fullscreenCheckbox.target = self;
-    fullscreenCheckbox.action = @selector(pauseOnFullscreenChanged:);
-    [perfContent addSubview:fullscreenCheckbox];
+  BOOL pauseOnFullscreen = [defaults boolForKey:kDefaultsPauseOnFullscreen];
+  NSButton *fullscreenCheckbox = [[NSButton alloc]
+      initWithFrame:NSMakeRect(leftPadding, 40,
+                               perfContent.bounds.size.width - leftPadding * 2,
+                               20)];
+  [fullscreenCheckbox setButtonType:NSButtonTypeSwitch];
+  fullscreenCheckbox.title = @"Pause wallpaper when apps are fullscreen";
+  fullscreenCheckbox.state =
+      pauseOnFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
+  fullscreenCheckbox.target = self;
+  fullscreenCheckbox.action = @selector(pauseOnFullscreenChanged:);
+  [perfContent addSubview:fullscreenCheckbox];
 
-    NSTextField *perfHelpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftPadding, 5, perfContent.bounds.size.width - leftPadding * 2, 30)];
-    perfHelpText.stringValue = @"These settings help conserve battery and reduce distractions during fullscreen activities like games or presentations.";
-    perfHelpText.font = [NSFont systemFontOfSize:11];
-    perfHelpText.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
-    perfHelpText.editable = NO;
-    perfHelpText.bordered = NO;
-    perfHelpText.backgroundColor = [NSColor clearColor];
-    perfHelpText.lineBreakMode = NSLineBreakByWordWrapping;
-    [perfContent addSubview:perfHelpText];
+  NSTextField *perfHelpText = [[NSTextField alloc]
+      initWithFrame:NSMakeRect(leftPadding, 5,
+                               perfContent.bounds.size.width - leftPadding * 2,
+                               30)];
+  perfHelpText.stringValue =
+      @"These settings help conserve battery and reduce distractions during "
+      @"fullscreen activities like games or presentations.";
+  perfHelpText.font = [NSFont systemFontOfSize:11];
+  perfHelpText.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+  perfHelpText.editable = NO;
+  perfHelpText.bordered = NO;
+  perfHelpText.backgroundColor = [NSColor clearColor];
+  perfHelpText.lineBreakMode = NSLineBreakByWordWrapping;
+  [perfContent addSubview:perfHelpText];
 
-    perfSection.contentView = perfContent;
-    [self.preferencesView addSubview:perfSection];
+  perfSection.contentView = perfContent;
+  [self.preferencesView addSubview:perfSection];
 
-    // Cache Section
-    NSBox *cacheSection = [[NSBox alloc] initWithFrame:NSMakeRect(30, self.preferencesView.bounds.size.height - 430, self.preferencesView.bounds.size.width - 60, 90)];
-    cacheSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    cacheSection.title = @"Thumbnail Cache";
-    cacheSection.titlePosition = NSAtTop;
+  // Cache Section
+  NSBox *cacheSection = [[NSBox alloc]
+      initWithFrame:NSMakeRect(
+                        30, self.preferencesView.bounds.size.height - 430,
+                        self.preferencesView.bounds.size.width - 60, 90)];
+  cacheSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  cacheSection.title = @"Thumbnail Cache";
+  cacheSection.titlePosition = NSAtTop;
 
-    NSView *cacheContent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, cacheSection.bounds.size.width - 20, 60)];
+  NSView *cacheContent = [[NSView alloc]
+      initWithFrame:NSMakeRect(0, 0, cacheSection.bounds.size.width - 20, 60)];
 
-    self.cacheSizeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftPadding, 32, cacheContent.bounds.size.width - leftPadding * 2, 18)];
-    [self updateCacheSizeLabel];
-    self.cacheSizeLabel.font = [NSFont systemFontOfSize:12];
-    self.cacheSizeLabel.textColor = [NSColor colorWithWhite:0.6 alpha:1.0];
-    self.cacheSizeLabel.editable = NO;
-    self.cacheSizeLabel.bordered = NO;
-    self.cacheSizeLabel.backgroundColor = [NSColor clearColor];
-    [cacheContent addSubview:self.cacheSizeLabel];
+  self.cacheSizeLabel = [[NSTextField alloc]
+      initWithFrame:NSMakeRect(leftPadding, 32,
+                               cacheContent.bounds.size.width - leftPadding * 2,
+                               18)];
+  [self updateCacheSizeLabel];
+  self.cacheSizeLabel.font = [NSFont systemFontOfSize:12];
+  self.cacheSizeLabel.textColor = [NSColor colorWithWhite:0.6 alpha:1.0];
+  self.cacheSizeLabel.editable = NO;
+  self.cacheSizeLabel.bordered = NO;
+  self.cacheSizeLabel.backgroundColor = [NSColor clearColor];
+  [cacheContent addSubview:self.cacheSizeLabel];
 
-    NSButton *clearCacheButton = [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 5, 130, 24)];
-    clearCacheButton.title = @"Clear Cache";
-    clearCacheButton.bezelStyle = NSBezelStyleRounded;
-    clearCacheButton.target = self;
-    clearCacheButton.action = @selector(clearThumbnailCache:);
-    [cacheContent addSubview:clearCacheButton];
+  NSButton *clearCacheButton =
+      [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 5, 130, 24)];
+  clearCacheButton.title = @"Clear Cache";
+  clearCacheButton.bezelStyle = NSBezelStyleRounded;
+  clearCacheButton.target = self;
+  clearCacheButton.action = @selector(clearThumbnailCache:);
+  [cacheContent addSubview:clearCacheButton];
 
-    cacheSection.contentView = cacheContent;
-    [self.preferencesView addSubview:cacheSection];
+  cacheSection.contentView = cacheContent;
+  [self.preferencesView addSubview:cacheSection];
 
-    // Startup Section
-    NSBox *startupSection = [[NSBox alloc] initWithFrame:NSMakeRect(30, self.preferencesView.bounds.size.height - 540, self.preferencesView.bounds.size.width - 60, 80)];
-    startupSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    startupSection.title = @"Startup";
-    startupSection.titlePosition = NSAtTop;
+  // Startup Section
+  NSBox *startupSection = [[NSBox alloc]
+      initWithFrame:NSMakeRect(
+                        30, self.preferencesView.bounds.size.height - 540,
+                        self.preferencesView.bounds.size.width - 60, 80)];
+  startupSection.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+  startupSection.title = @"Startup";
+  startupSection.titlePosition = NSAtTop;
 
-    NSView *startupContent = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, startupSection.bounds.size.width - 20, 50)];
+  NSView *startupContent = [[NSView alloc]
+      initWithFrame:NSMakeRect(0, 0, startupSection.bounds.size.width - 20,
+                               50)];
 
-    NSButton *launchAtLoginCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftPadding, 25, startupContent.bounds.size.width - leftPadding * 2, 20)];
-    [launchAtLoginCheckbox setButtonType:NSButtonTypeSwitch];
-    launchAtLoginCheckbox.title = @"Launch MacieWallpaper at login";
-    launchAtLoginCheckbox.state = [self isLaunchAtLoginEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
-    launchAtLoginCheckbox.target = self;
-    launchAtLoginCheckbox.action = @selector(launchAtLoginChanged:);
-    [startupContent addSubview:launchAtLoginCheckbox];
+  NSButton *launchAtLoginCheckbox = [[NSButton alloc]
+      initWithFrame:NSMakeRect(leftPadding, 25,
+                               startupContent.bounds.size.width -
+                                   leftPadding * 2,
+                               20)];
+  [launchAtLoginCheckbox setButtonType:NSButtonTypeSwitch];
+  launchAtLoginCheckbox.title = @"Launch MacieWallpaper at login";
+  launchAtLoginCheckbox.state = [self isLaunchAtLoginEnabled]
+                                    ? NSControlStateValueOn
+                                    : NSControlStateValueOff;
+  launchAtLoginCheckbox.target = self;
+  launchAtLoginCheckbox.action = @selector(launchAtLoginChanged:);
+  [startupContent addSubview:launchAtLoginCheckbox];
 
-    NSTextField *startupHelpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftPadding, 5, startupContent.bounds.size.width - leftPadding * 2, 18)];
-    startupHelpText.stringValue = @"Wallpaper will begin playing automatically when you log in.";
-    startupHelpText.font = [NSFont systemFontOfSize:11];
-    startupHelpText.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
-    startupHelpText.editable = NO;
-    startupHelpText.bordered = NO;
-    startupHelpText.backgroundColor = [NSColor clearColor];
-    [startupContent addSubview:startupHelpText];
+  NSTextField *startupHelpText = [[NSTextField alloc]
+      initWithFrame:NSMakeRect(leftPadding, 5,
+                               startupContent.bounds.size.width -
+                                   leftPadding * 2,
+                               18)];
+  startupHelpText.stringValue =
+      @"Wallpaper will begin playing automatically when you log in.";
+  startupHelpText.font = [NSFont systemFontOfSize:11];
+  startupHelpText.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+  startupHelpText.editable = NO;
+  startupHelpText.bordered = NO;
+  startupHelpText.backgroundColor = [NSColor clearColor];
+  [startupContent addSubview:startupHelpText];
 
-    startupSection.contentView = startupContent;
-    [self.preferencesView addSubview:startupSection];
+  startupSection.contentView = startupContent;
+  [self.preferencesView addSubview:startupSection];
 }
 
 - (void)showGalleryView {
-    [self.preferencesView removeFromSuperview];
-    if (!self.galleryView.superview) {
-        [self.mainContentArea addSubview:self.galleryView];
-    }
-    self.contentHeaderLabel.stringValue = @"All Wallpapers";
-    self.countLabel.hidden = NO;
-    self.searchField.hidden = NO;
-    [self updateMenuButtonSelection:self.allWallpapersButton];
+  [self.preferencesView removeFromSuperview];
+  if (!self.galleryView.superview) {
+    [self.mainContentArea addSubview:self.galleryView];
+  }
+  self.contentHeaderLabel.stringValue = @"All Wallpapers";
+  self.countLabel.hidden = NO;
+  self.searchField.hidden = NO;
+  [self updateMenuButtonSelection:self.allWallpapersButton];
 }
 
 - (void)showPreferencesView {
-    // Clear any active search so returning to the gallery shows everything
-    [self applySearchFilter:@""];
-    [self.searchField setStringValue:@""];
+  // Clear any active search so returning to the gallery shows everything
+  [self applySearchFilter:@""];
+  [self.searchField setStringValue:@""];
 
-    [self.galleryView removeFromSuperview];
-    if (!self.preferencesView.superview) {
-        [self.mainContentArea addSubview:self.preferencesView];
-    }
-    self.contentHeaderLabel.stringValue = @"Preferences";
-    self.countLabel.hidden = YES;
-    self.searchField.hidden = YES;
-    [self updateMenuButtonSelection:self.preferencesButton];
+  [self.galleryView removeFromSuperview];
+  if (!self.preferencesView.superview) {
+    [self.mainContentArea addSubview:self.preferencesView];
+  }
+  self.contentHeaderLabel.stringValue = @"Preferences";
+  self.countLabel.hidden = YES;
+  self.searchField.hidden = YES;
+  [self updateMenuButtonSelection:self.preferencesButton];
 }
 
 - (void)updateMenuButtonSelection:(NSButton *)selectedButton {
-    // Reset all buttons
-    self.allWallpapersButton.contentTintColor = [NSColor colorWithWhite:0.8 alpha:1.0];
-    self.allWallpapersButton.wantsLayer = NO;
-    self.allWallpapersButton.layer.backgroundColor = nil;
+  // Reset all buttons
+  self.allWallpapersButton.contentTintColor = [NSColor colorWithWhite:0.8
+                                                                alpha:1.0];
+  self.allWallpapersButton.wantsLayer = NO;
+  self.allWallpapersButton.layer.backgroundColor = nil;
 
-    self.preferencesButton.contentTintColor = [NSColor colorWithWhite:0.8 alpha:1.0];
-    self.preferencesButton.wantsLayer = NO;
-    self.preferencesButton.layer.backgroundColor = nil;
+  self.preferencesButton.contentTintColor = [NSColor colorWithWhite:0.8
+                                                              alpha:1.0];
+  self.preferencesButton.wantsLayer = NO;
+  self.preferencesButton.layer.backgroundColor = nil;
 
-    // Highlight selected button
-    selectedButton.contentTintColor = [NSColor whiteColor];
-    selectedButton.wantsLayer = YES;
-    selectedButton.layer.backgroundColor = [[NSColor colorWithWhite:0.25 alpha:1.0] CGColor];
-    selectedButton.layer.cornerRadius = 6;
+  // Highlight selected button
+  selectedButton.contentTintColor = [NSColor whiteColor];
+  selectedButton.wantsLayer = YES;
+  selectedButton.layer.backgroundColor = [[NSColor colorWithWhite:0.25
+                                                            alpha:1.0] CGColor];
+  selectedButton.layer.cornerRadius = 6;
 }
 
 - (NSTextField *)createSectionLabel:(NSString *)title yPos:(CGFloat)yPos {
-    NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(15, yPos, 190, 16)];
-    label.stringValue = title;
-    label.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
-    label.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
-    label.alignment = NSTextAlignmentLeft;
-    label.editable = NO;
-    label.bordered = NO;
-    label.backgroundColor = [NSColor clearColor];
-    label.autoresizingMask = NSViewMinYMargin;
-    return label;
+  NSTextField *label =
+      [[NSTextField alloc] initWithFrame:NSMakeRect(15, yPos, 190, 16)];
+  label.stringValue = title;
+  label.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+  label.textColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+  label.alignment = NSTextAlignmentLeft;
+  label.editable = NO;
+  label.bordered = NO;
+  label.backgroundColor = [NSColor clearColor];
+  label.autoresizingMask = NSViewMinYMargin;
+  return label;
 }
 
-- (NSButton *)createMenuButton:(NSString *)title yPos:(CGFloat)yPos action:(SEL)action selected:(BOOL)selected {
-    NSButton *button = [[NSButton alloc] initWithFrame:NSMakeRect(10, yPos, 200, 32)];
-    [button setButtonType:NSButtonTypeMomentaryPushIn];
-    button.bordered = NO;
-    button.alignment = NSTextAlignmentLeft;
-    button.title = title;
-    button.font = [NSFont systemFontOfSize:13];
-    button.contentTintColor = selected ? [NSColor whiteColor] : [NSColor colorWithWhite:0.8 alpha:1.0];
-    button.target = self;
-    button.action = action;
-    button.autoresizingMask = NSViewMinYMargin;
+- (NSButton *)createMenuButton:(NSString *)title
+                          yPos:(CGFloat)yPos
+                        action:(SEL)action
+                      selected:(BOOL)selected {
+  NSButton *button =
+      [[NSButton alloc] initWithFrame:NSMakeRect(10, yPos, 200, 32)];
+  [button setButtonType:NSButtonTypeMomentaryPushIn];
+  button.bordered = NO;
+  button.alignment = NSTextAlignmentLeft;
+  button.title = title;
+  button.font = [NSFont systemFontOfSize:13];
+  button.contentTintColor =
+      selected ? [NSColor whiteColor] : [NSColor colorWithWhite:0.8 alpha:1.0];
+  button.target = self;
+  button.action = action;
+  button.autoresizingMask = NSViewMinYMargin;
 
-    if (selected) {
-        button.wantsLayer = YES;
-        button.layer.backgroundColor = [[NSColor colorWithWhite:0.25 alpha:1.0] CGColor];
-        button.layer.cornerRadius = 6;
-    }
+  if (selected) {
+    button.wantsLayer = YES;
+    button.layer.backgroundColor = [[NSColor colorWithWhite:0.25
+                                                      alpha:1.0] CGColor];
+    button.layer.cornerRadius = 6;
+  }
 
-    return button;
+  return button;
 }
 
 - (void)showAllWallpapers:(id)sender {
-    [self showGalleryView];
+  [self showGalleryView];
 }
 
 - (void)openPreferences:(id)sender {
-    [self showPreferencesView];
+  [self showPreferencesView];
 }
 
 /// Triggers a full wallpaper reload via the typed callback set by AppDelegate.
-/// Replaces the old unsafe [[NSApp delegate] performSelector:@selector(reloadWallpapers)] pattern.
+/// Replaces the old unsafe [[NSApp delegate]
+/// performSelector:@selector(reloadWallpapers)] pattern.
 - (void)changePathFromPreferences:(id)sender {
-    if (self.onWallpapersReloadRequested) {
-        self.onWallpapersReloadRequested();
-    }
+  if (self.onWallpapersReloadRequested) {
+    self.onWallpapersReloadRequested();
+  }
 }
 
 #pragma mark - Performance Settings
 
 - (void)pauseOnBatteryChanged:(id)sender {
-    NSButton *checkbox = (NSButton *)sender;
-    BOOL enabled = (checkbox.state == NSControlStateValueOn);
-    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kDefaultsPauseOnBattery];
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"PerformanceSettingsChanged" object:nil];
+  NSButton *checkbox = (NSButton *)sender;
+  BOOL enabled = (checkbox.state == NSControlStateValueOn);
+  [[NSUserDefaults standardUserDefaults] setBool:enabled
+                                          forKey:kDefaultsPauseOnBattery];
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:@"PerformanceSettingsChanged"
+                    object:nil];
 }
 
 - (void)pauseOnFullscreenChanged:(id)sender {
-    NSButton *checkbox = (NSButton *)sender;
-    BOOL enabled = (checkbox.state == NSControlStateValueOn);
-    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kDefaultsPauseOnFullscreen];
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"PerformanceSettingsChanged" object:nil];
+  NSButton *checkbox = (NSButton *)sender;
+  BOOL enabled = (checkbox.state == NSControlStateValueOn);
+  [[NSUserDefaults standardUserDefaults] setBool:enabled
+                                          forKey:kDefaultsPauseOnFullscreen];
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:@"PerformanceSettingsChanged"
+                    object:nil];
 }
 
 #pragma mark - Cache Management
 
 - (void)updateCacheSizeLabel {
-    ThumbnailCache *cache = [ThumbnailCache sharedCache];
-    NSUInteger sizeBytes = [cache cacheSize];
+  ThumbnailCache *cache = [ThumbnailCache sharedCache];
+  NSUInteger sizeBytes = [cache cacheSize];
 
-    NSString *sizeString;
-    if (sizeBytes < 1024) {
-        sizeString = [NSString stringWithFormat:@"%lu bytes", (unsigned long)sizeBytes];
-    } else if (sizeBytes < 1024 * 1024) {
-        sizeString = [NSString stringWithFormat:@"%.1f KB", sizeBytes / 1024.0];
-    } else {
-        sizeString = [NSString stringWithFormat:@"%.1f MB", sizeBytes / (1024.0 * 1024.0)];
-    }
+  NSString *sizeString;
+  if (sizeBytes < 1024) {
+    sizeString =
+        [NSString stringWithFormat:@"%lu bytes", (unsigned long)sizeBytes];
+  } else if (sizeBytes < 1024 * 1024) {
+    sizeString = [NSString stringWithFormat:@"%.1f KB", sizeBytes / 1024.0];
+  } else {
+    sizeString =
+        [NSString stringWithFormat:@"%.1f MB", sizeBytes / (1024.0 * 1024.0)];
+  }
 
-    self.cacheSizeLabel.stringValue = [NSString stringWithFormat:@"Cache size: %@", sizeString];
+  self.cacheSizeLabel.stringValue =
+      [NSString stringWithFormat:@"Cache size: %@", sizeString];
 }
 
 - (void)clearThumbnailCache:(id)sender {
-    ThumbnailCache *cache = [ThumbnailCache sharedCache];
-    [cache clearCache];
-    [self updateCacheSizeLabel];
-    [self.collectionView reloadData];
+  ThumbnailCache *cache = [ThumbnailCache sharedCache];
+  [cache clearCache];
+  [self updateCacheSizeLabel];
+  [self.collectionView reloadData];
 }
 
 - (void)loadVideos {
-    std::vector<Macie::WallpaperProject> wallpapers = [self.assetManager getVideoWallpapers];
+  std::vector<Macie::WallpaperProject> wallpapers =
+      [self.assetManager getVideoWallpapers];
 
-    NSMutableArray *videoArray = [NSMutableArray array];
-    for (const auto& wallpaper : wallpapers) {
-        [videoArray addObject:@{
-            @"id": [NSString stringWithUTF8String:wallpaper.id.c_str()],
-            @"title": [NSString stringWithUTF8String:wallpaper.title.c_str()],
-            @"path": [NSString stringWithUTF8String:wallpaper.videoFilePath.c_str()]
-        }];
+  NSMutableArray *videoArray = [NSMutableArray array];
+  for (const auto &wallpaper : wallpapers) {
+    [videoArray addObject:@{
+      @"id" : [NSString stringWithUTF8String:wallpaper.id.c_str()],
+      @"title" : [NSString stringWithUTF8String:wallpaper.title.c_str()],
+      @"path" : [NSString stringWithUTF8String:wallpaper.videoFilePath.c_str()]
+    }];
+  }
+
+  self.videos = [videoArray copy];
+  // On load (or reload) clear any active search and show everything
+  self.filteredVideos = self.videos;
+  [self.searchField setStringValue:@""];
+  [self.collectionView reloadData];
+
+  [self updateCountLabel];
+
+  // Update "Currently Playing" using the persisted ID — AppDelegate writes this
+  // before the gallery opens, so it always matches the wallpaper on the
+  // desktop.
+  NSString *playingTitle = @"None";
+  if (self.videos.count > 0) {
+    NSString *savedId = [[NSUserDefaults standardUserDefaults]
+        stringForKey:kDefaultsLastWallpaperId];
+    if (savedId.length > 0) {
+      NSPredicate *idPredicate =
+          [NSPredicate predicateWithFormat:@"id == %@", savedId];
+      NSDictionary *match =
+          [[self.videos filteredArrayUsingPredicate:idPredicate] firstObject];
+      playingTitle = match ? match[@"title"] : self.videos[0][@"title"];
+    } else {
+      playingTitle = self.videos[0][@"title"];
     }
+  }
 
-    self.videos = [videoArray copy];
-    // On load (or reload) clear any active search and show everything
-    self.filteredVideos = self.videos;
-    [self.searchField setStringValue:@""];
-    [self.collectionView reloadData];
+  NSString *statsText = [NSString
+      stringWithFormat:@"Total Wallpapers: %lu\nCurrently Playing:\n%@",
+                       (unsigned long)self.videos.count, playingTitle];
+  self.statsLabel.stringValue = statsText;
 
-    [self updateCountLabel];
-
-    // Update statistics in sidebar
-    NSString *statsText = [NSString stringWithFormat:@"Total Wallpapers: %lu\nCurrently Playing:\n%@",
-                          (unsigned long)self.videos.count,
-                          self.videos.count > 0 ? self.videos[0][@"title"] : @"None"];
-    self.statsLabel.stringValue = statsText;
-
-    // Initialize mute button state to match video renderer
-    [self updateMuteButton];
+  // Initialize mute button state to match video renderer
+  [self updateMuteButton];
 }
 
 #pragma mark - NSCollectionViewDataSource
 
-- (NSInteger)collectionView:(NSCollectionView *)collectionView numberOfItemsInSection:(NSInteger)section {
-    return self.filteredVideos.count;
+- (NSInteger)collectionView:(NSCollectionView *)collectionView
+     numberOfItemsInSection:(NSInteger)section {
+  return self.filteredVideos.count;
 }
 
 - (NSCollectionViewItem *)collectionView:(NSCollectionView *)collectionView
      itemForRepresentedObjectAtIndexPath:(NSIndexPath *)indexPath {
 
-    VideoCollectionItem *item = [collectionView makeItemWithIdentifier:@"VideoItem" forIndexPath:indexPath];
+  VideoCollectionItem *item =
+      [collectionView makeItemWithIdentifier:@"VideoItem"
+                                forIndexPath:indexPath];
 
-    NSDictionary *video = self.filteredVideos[indexPath.item];
-    [item configureWithVideoData:video];
+  NSDictionary *video = self.filteredVideos[indexPath.item];
+  [item configureWithVideoData:video];
 
-    return item;
+  return item;
 }
 
 #pragma mark - NSCollectionViewDelegate
 
-- (void)collectionView:(NSCollectionView *)collectionView didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
-    NSIndexPath *indexPath = indexPaths.anyObject;
-    if (indexPath) {
-        NSDictionary *video = self.filteredVideos[indexPath.item];
-        NSString *videoPath = video[@"path"];
-        NSString *videoTitle = video[@"title"];
-        NSString *videoId = video[@"id"];
+- (void)collectionView:(NSCollectionView *)collectionView
+    didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
+  NSIndexPath *indexPath = indexPaths.anyObject;
+  if (indexPath) {
+    NSDictionary *video = self.filteredVideos[indexPath.item];
+    NSString *videoPath = video[@"path"];
+    NSString *videoTitle = video[@"title"];
+    NSString *videoId = video[@"id"];
 
-        // Remember current mute state before loading new video
-        BOOL wasMuted = self.videoRenderer.muted;
+    // Remember current mute state before loading new video
+    BOOL wasMuted = self.videoRenderer.muted;
 
-        BOOL success = [self.videoRenderer loadAndPlayVideo:videoPath];
+    BOOL success = [self.videoRenderer loadAndPlayVideo:videoPath];
 
-        if (success) {
-            // Persist this wallpaper so the next launch restores it
-            [[NSUserDefaults standardUserDefaults] setObject:videoId forKey:kDefaultsLastWallpaperId];
+    if (success) {
+      // Persist this wallpaper so the next launch restores it
+      [[NSUserDefaults standardUserDefaults]
+          setObject:videoId
+             forKey:kDefaultsLastWallpaperId];
 
-            // Reapply the mute state to the new video
-            if (wasMuted) {
-                [self.videoRenderer mute];
-            }
+      // Reapply the mute state to the new video
+      if (wasMuted) {
+        [self.videoRenderer mute];
+      }
 
-            [self updateMuteButton];
+      [self updateMuteButton];
 
-            // Update statistics with currently playing wallpaper
-            NSString *statsText = [NSString stringWithFormat:@"Total Wallpapers: %lu\nCurrently Playing:\n%@",
-                                  (unsigned long)self.videos.count,
-                                  videoTitle];
-            self.statsLabel.stringValue = statsText;
-        }
+      // Update statistics with currently playing wallpaper
+      NSString *statsText = [NSString
+          stringWithFormat:@"Total Wallpapers: %lu\nCurrently Playing:\n%@",
+                           (unsigned long)self.videos.count, videoTitle];
+      self.statsLabel.stringValue = statsText;
     }
+  }
 }
 
 #pragma mark - Search
 
 - (void)updateCountLabel {
-    if (self.filteredVideos.count == self.videos.count) {
-        self.countLabel.stringValue = [NSString stringWithFormat:@"%lu videos", (unsigned long)self.videos.count];
-    } else {
-        self.countLabel.stringValue = [NSString stringWithFormat:@"%lu of %lu",
-                                      (unsigned long)self.filteredVideos.count,
-                                      (unsigned long)self.videos.count];
-    }
+  if (self.filteredVideos.count == self.videos.count) {
+    self.countLabel.stringValue = [NSString
+        stringWithFormat:@"%lu videos", (unsigned long)self.videos.count];
+  } else {
+    self.countLabel.stringValue =
+        [NSString stringWithFormat:@"%lu of %lu",
+                                   (unsigned long)self.filteredVideos.count,
+                                   (unsigned long)self.videos.count];
+  }
 }
 
 /// Target/action entry point — called by the search field on every keystroke.
 - (void)searchFieldChanged:(NSSearchField *)sender {
-    [self applySearchFilter:sender.stringValue];
+  [self applySearchFilter:sender.stringValue];
 }
 
-/// NSSearchFieldDelegate — also fires on every keystroke via controlTextDidChange:.
+/// NSSearchFieldDelegate — also fires on every keystroke via
+/// controlTextDidChange:.
 - (void)controlTextDidChange:(NSNotification *)notification {
-    if (notification.object == self.searchField) {
-        [self applySearchFilter:self.searchField.stringValue];
-    }
+  if (notification.object == self.searchField) {
+    [self applySearchFilter:self.searchField.stringValue];
+  }
 }
 
-/// Filters self.videos by a case-insensitive title match and refreshes the collection view.
-/// An empty query restores the full list.
+/// Filters self.videos by a case-insensitive title match and refreshes the
+/// collection view. An empty query restores the full list.
 - (void)applySearchFilter:(NSString *)query {
-    if (query.length == 0) {
-        self.filteredVideos = self.videos;
-    } else {
-        NSPredicate *predicate = [NSPredicate predicateWithFormat:@"title CONTAINS[cd] %@", query];
-        self.filteredVideos = [self.videos filteredArrayUsingPredicate:predicate];
-    }
-    [self.collectionView reloadData];
-    [self updateCountLabel];
+  if (query.length == 0) {
+    self.filteredVideos = self.videos;
+  } else {
+    NSPredicate *predicate =
+        [NSPredicate predicateWithFormat:@"title CONTAINS[cd] %@", query];
+    self.filteredVideos = [self.videos filteredArrayUsingPredicate:predicate];
+  }
+  [self.collectionView reloadData];
+  [self updateCountLabel];
 }
 
 #pragma mark - Actions
 
 - (void)toggleMute:(id)sender {
-    if (self.videoRenderer.muted) {
-        [self.videoRenderer unmute];
-    } else {
-        [self.videoRenderer mute];
-    }
+  if (self.videoRenderer.muted) {
+    [self.videoRenderer unmute];
+  } else {
+    [self.videoRenderer mute];
+  }
 
-    // Save the mute state to persist between sessions
-    [[NSUserDefaults standardUserDefaults] setBool:self.videoRenderer.muted forKey:kDefaultsLastMuteState];
+  // Save the mute state to persist between sessions
+  [[NSUserDefaults standardUserDefaults] setBool:self.videoRenderer.muted
+                                          forKey:kDefaultsLastMuteState];
 
-    [self updateMuteButton];
+  [self updateMuteButton];
 }
 
 - (void)updateMuteButton {
-    if (self.videoRenderer.muted) {
-        self.muteButton.title = @"Unmute";
-    } else {
-        self.muteButton.title = @"Mute";
-    }
+  if (self.videoRenderer.muted) {
+    self.muteButton.title = @"Unmute";
+  } else {
+    self.muteButton.title = @"Mute";
+  }
 }
 
 #pragma mark - Launch at Login
@@ -670,45 +829,48 @@
 /// Returns whether the app is currently registered as a login item.
 /// Reads live from SMAppService so the checkbox always reflects system state.
 - (BOOL)isLaunchAtLoginEnabled {
-    if (@available(macOS 13.0, *)) {
-        return [SMAppService mainAppService].status == SMAppServiceStatusEnabled;
-    }
-    return NO;
+  if (@available(macOS 13.0, *)) {
+    return [SMAppService mainAppService].status == SMAppServiceStatusEnabled;
+  }
+  return NO;
 }
 
-/// Called when the user toggles the "Launch at login" checkbox.
+/// Called when the
+// user toggles the "Launch at login" checkbox.
 - (void)launchAtLoginChanged:(NSButton *)sender {
-    if (@available(macOS 13.0, *)) {
-        NSError *error = nil;
-        BOOL enable = (sender.state == NSControlStateValueOn);
+  if (@available(macOS 13.0, *)) {
+    NSError *error = nil;
+    BOOL enable = (sender.state == NSControlStateValueOn);
 
-        if (enable) {
-            [[SMAppService mainAppService] registerAndReturnError:&error];
-        } else {
-            [[SMAppService mainAppService] unregisterAndReturnError:&error];
-        }
-
-        if (error) {
-            // Revert the checkbox to match actual system state
-            sender.state = [self isLaunchAtLoginEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
-
-            NSAlert *alert = [[NSAlert alloc] init];
-            alert.messageText = enable ? @"Could Not Enable Launch at Login" : @"Could Not Disable Launch at Login";
-            alert.informativeText = error.localizedDescription;
-            alert.alertStyle = NSAlertStyleWarning;
-            [alert addButtonWithTitle:@"OK"];
-            [alert runModal];
-        }
+    if (enable) {
+      [[SMAppService mainAppService] registerAndReturnError:&error];
     } else {
-        // macOS 12 — SMAppService not available
-        sender.state = NSControlStateValueOff;
-        NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Not Supported";
-        alert.informativeText = @"Launch at login requires macOS 13 or later.";
-        alert.alertStyle = NSAlertStyleInformational;
-        [alert addButtonWithTitle:@"OK"];
-        [alert runModal];
+      [[SMAppService mainAppService] unregisterAndReturnError:&error];
     }
+
+    if (error) {
+      // Revert the checkbox to match actual system state
+      sender.state = [self isLaunchAtLoginEnabled] ? NSControlStateValueOn
+                                                   : NSControlStateValueOff;
+
+      NSAlert *alert = [[NSAlert alloc] init];
+      alert.messageText = enable ? @"Could Not Enable Launch at Login"
+                                 : @"Could Not Disable Launch at Login";
+      alert.informativeText = error.localizedDescription;
+      alert.alertStyle = NSAlertStyleWarning;
+      [alert addButtonWithTitle:@"OK"];
+      [alert runModal];
+    }
+  } else {
+    // macOS 12 — SMAppService not available
+    sender.state = NSControlStateValueOff;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Not Supported";
+    alert.informativeText = @"Launch at login requires macOS 13 or later.";
+    alert.alertStyle = NSAlertStyleInformational;
+    [alert addButtonWithTitle:@"OK"];
+    [alert runModal];
+  }
 }
 
 - (void)dealloc {
