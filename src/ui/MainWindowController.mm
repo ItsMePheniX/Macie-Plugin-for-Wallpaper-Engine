@@ -100,6 +100,7 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 @property (strong, nonatomic) NSImageView         *heroThumbnailView;
 @property (strong, nonatomic) AVPlayer            *heroPreviewPlayer;
 @property (strong, nonatomic) AVPlayerLayer       *heroPreviewLayer;
+@property (strong, nonatomic) NSView              *heroPreviewView; // dedicated host for AVPlayerLayer
 @property (strong, nonatomic) NSTrackingArea      *heroTrackingArea;
 @property (strong, nonatomic) NSTextField         *heroTitleLabel;
 @property (strong, nonatomic) NSTextField         *heroMetaLabel;
@@ -113,13 +114,6 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 @property (strong, nonatomic) NSTextField         *galleryHeaderLabel;
 @property (strong, nonatomic) NSTextField         *countLabel;
 @property (strong, nonatomic) NSView              *contentArea;   // right of sidebar
-
-// Mini player
-@property (strong, nonatomic) NSVisualEffectView  *miniPlayerView;
-@property (strong, nonatomic) NSImageView         *miniPlayerThumb;
-@property (strong, nonatomic) NSTextField         *miniPlayerTitleLabel;
-@property (strong, nonatomic) NSTextField         *miniPlayerMetaLabel;
-@property (strong, nonatomic) NSButton            *miniPlayPauseButton;
 
 // Preferences panel (sheet / popover)
 @property (strong, nonatomic) NSTextField         *cacheSizeLabel;
@@ -215,19 +209,13 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     logoRow.autoresizingMask = NSViewMinYMargin;
     [self.sidebarView addSubview:logoRow];
 
-    // "M" badge
-    NSView *badge = [[NSView alloc] initWithFrame:NSMakeRect(0, 8, 32, 32)];
+    // App icon badge (uses real bundle icon so it matches the Dock)
+    NSImageView *badge = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 6, 34, 34)];
+    badge.image = [NSImage imageNamed:NSImageNameApplicationIcon];
+    badge.imageScaling = NSImageScaleProportionallyUpOrDown;
     badge.wantsLayer = YES;
     badge.layer.cornerRadius = 8.0;
-    badge.layer.backgroundColor = [[NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0] CGColor];
-    NSTextField *badgeLetter = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 5, 32, 22)];
-    badgeLetter.stringValue = @"M";
-    badgeLetter.font = [NSFont systemFontOfSize:16 weight:NSFontWeightBold];
-    badgeLetter.textColor = [NSColor whiteColor];
-    badgeLetter.alignment = NSTextAlignmentCenter;
-    badgeLetter.editable = NO; badgeLetter.bordered = NO;
-    badgeLetter.backgroundColor = [NSColor clearColor];
-    [badge addSubview:badgeLetter];
+    badge.layer.masksToBounds = YES;
     [logoRow addSubview:badge];
 
     NSTextField *appName = [[NSTextField alloc] initWithFrame:NSMakeRect(40, 18, 140, 18)];
@@ -254,19 +242,19 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     self.librarySidebarButton = [self sidebarButton:@"house.fill" title:@"Library" y:cursor - 32 tag:SidebarSectionLibrary];
     cursor -= 36;
     [self.sidebarView addSubview:self.librarySidebarButton];
-    self.libraryCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 6];
+    self.libraryCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 10];
     [self.sidebarView addSubview:self.libraryCountLabel];
 
     self.favoritesSidebarButton = [self sidebarButton:@"heart.fill" title:@"Favorites" y:cursor - 32 tag:SidebarSectionFavorites];
     cursor -= 36;
     [self.sidebarView addSubview:self.favoritesSidebarButton];
-    self.favoritesCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 6];
+    self.favoritesCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 10];
     [self.sidebarView addSubview:self.favoritesCountLabel];
 
     self.recentSidebarButton = [self sidebarButton:@"clock.fill" title:@"Recent" y:cursor - 32 tag:SidebarSectionRecent];
     cursor -= 36;
     [self.sidebarView addSubview:self.recentSidebarButton];
-    self.recentCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 6];
+    self.recentCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 10];
     [self.sidebarView addSubview:self.recentCountLabel];
 
     self.randomSidebarButton = [self sidebarButton:@"shuffle" title:@"Random" y:cursor - 32 tag:SidebarSectionRandom];
@@ -371,17 +359,23 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 // Sidebar helper — icon + text button
 - (NSButton *)sidebarButton:(NSString *)symbolName title:(NSString *)title y:(CGFloat)y tag:(NSInteger)tag {
     NSButton *btn = [[NSButton alloc] initWithFrame:NSMakeRect(8, y, kSidebarWidth - 16, 30)];
-    btn.bezelStyle = NSBezelStyleInline;
+    btn.bezelStyle = NSBezelStyleRoundRect;
     btn.bordered = NO;
     btn.wantsLayer = YES;
     btn.layer.cornerRadius = 7.0;
+    btn.alignment = NSTextAlignmentLeft;
     btn.tag = tag;
     btn.target = self;
     btn.action = @selector(sidebarButtonClicked:);
     btn.autoresizingMask = NSViewMinYMargin;
 
-    // Build attributed title with icon + space + text
+    // Left-aligned paragraph style
+    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
+    para.alignment = NSTextAlignmentLeft;
+
+    // Attributed title: indent + icon + gap + text
     NSMutableAttributedString *attrTitle = [[NSMutableAttributedString alloc] init];
+    [attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"  "]];
     if (@available(macOS 11.0, *)) {
         NSImage *icon = [NSImage imageWithSystemSymbolName:symbolName
                                   accessibilityDescription:nil];
@@ -393,12 +387,13 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
         [attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"  "]];
     }
     NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: [NSColor labelColor]
+        NSFontAttributeName:            [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: [NSColor labelColor],
+        NSParagraphStyleAttributeName:  para
     };
     [attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:title attributes:attrs]];
+    [attrTitle addAttribute:NSParagraphStyleAttributeName value:para range:NSMakeRange(0, attrTitle.length)];
     [btn setAttributedTitle:attrTitle];
-    btn.imagePosition = NSImageLeft;
     return btn;
 }
 
@@ -432,7 +427,6 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     [self buildToolbar];
     [self buildHeroSection];
     [self buildGallery];
-    [self buildMiniPlayer];
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +511,13 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     self.heroThumbnailView.wantsLayer = YES;
     self.heroThumbnailView.layer.masksToBounds = YES;
     [self.heroContainer addSubview:self.heroThumbnailView];
+
+    // Dedicated view to host AVPlayerLayer — AppKit won't wipe sublayers on a plain NSView
+    self.heroPreviewView = [[NSView alloc] initWithFrame:self.heroContainer.bounds];
+    self.heroPreviewView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.heroPreviewView.wantsLayer = YES;
+    self.heroPreviewView.alphaValue = 0.0; // hidden until video is ready
+    [self.heroContainer addSubview:self.heroPreviewView];
 
     // Dark gradient overlay across bottom third
     CAGradientLayer *gradient = [CAGradientLayer layer];
@@ -661,43 +662,70 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 
     NSURL *url = [NSURL fileURLWithPath:vid[@"path"]];
     AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
-    self.heroPreviewPlayer = [AVPlayer playerWithPlayerItem:item];
-    self.heroPreviewPlayer.muted = YES;
+    AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
+    player.muted = YES;
+    self.heroPreviewPlayer = player;
 
-    if (!self.heroPreviewLayer) {
-        self.heroPreviewLayer = [AVPlayerLayer playerLayerWithPlayer:self.heroPreviewPlayer];
-        self.heroPreviewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-        self.heroPreviewLayer.frame = self.heroThumbnailView.bounds;
-        self.heroPreviewLayer.opacity = 0.0;
-        [self.heroThumbnailView.layer addSublayer:self.heroPreviewLayer];
-    } else {
-        self.heroPreviewLayer.player = self.heroPreviewPlayer;
+    // Always create a fresh layer on the dedicated preview view
+    if (self.heroPreviewLayer) {
+        [self.heroPreviewLayer removeFromSuperlayer];
     }
-    self.heroPreviewLayer.frame = self.heroThumbnailView.bounds;
+    self.heroPreviewLayer = [AVPlayerLayer playerLayerWithPlayer:player];
+    self.heroPreviewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    self.heroPreviewLayer.frame = self.heroPreviewView.bounds;
+    [self.heroPreviewView.layer addSublayer:self.heroPreviewLayer];
 
-    [self.heroPreviewPlayer play];
+    // Thumbnail stays fully visible; wait for video to have frames before cross-fading
+    self.heroThumbnailView.alphaValue = 1.0;
+    self.heroPreviewView.alphaValue   = 0.0;
 
-    CABasicAnimation *fadeIn = [CABasicAnimation animationWithKeyPath:@"opacity"];
-    fadeIn.fromValue = @0.0;
-    fadeIn.toValue   = @1.0;
-    fadeIn.duration  = 0.3;
-    self.heroPreviewLayer.opacity = 1.0;
-    [self.heroPreviewLayer addAnimation:fadeIn forKey:@"fadeIn"];
+    [player play];
+
+    // KVO: fade in preview and fade out thumbnail only once video has actual frames
+    [self.heroPreviewLayer addObserver:self
+                            forKeyPath:@"readyForDisplay"
+                               options:NSKeyValueObservingOptionNew
+                               context:NULL];
+}
+
+- (void)observeValueForKeyPath:(NSString *)kp ofObject:(id)obj
+                        change:(NSDictionary *)change context:(void *)ctx {
+    if ([kp isEqualToString:@"readyForDisplay"] && [change[NSKeyValueChangeNewKey] boolValue]) {
+        // Remove observer before dispatch to avoid double-fire
+        @try { [self.heroPreviewLayer removeObserver:self forKeyPath:@"readyForDisplay"]; } @catch (...) {}
+
+        // Safety: bail if user already moused out
+        AVPlayer *capturedPlayer = self.heroPreviewPlayer;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!capturedPlayer || capturedPlayer != self.heroPreviewPlayer) return;
+            self.heroPreviewLayer.frame = self.heroPreviewView.bounds;
+            [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+                ctx.duration = 0.25;
+                self.heroPreviewView.animator.alphaValue   = 1.0;
+                self.heroThumbnailView.animator.alphaValue = 0.0;
+            } completionHandler:nil];
+        });
+    }
 }
 
 - (void)stopHeroVideoPreview {
-    [self.heroPreviewPlayer pause];
-    CABasicAnimation *fadeOut = [CABasicAnimation animationWithKeyPath:@"opacity"];
-    fadeOut.fromValue = @1.0;
-    fadeOut.toValue   = @0.0;
-    fadeOut.duration  = 0.25;
-    [CATransaction begin];
-    [CATransaction setCompletionBlock:^{
-        self.heroPreviewPlayer = nil;
+    // Remove KVO observer first
+    @try { [self.heroPreviewLayer removeObserver:self forKeyPath:@"readyForDisplay"]; } @catch (...) {}
+
+    // Nil the player immediately — any queued observeValue block will bail on the nil check
+    self.heroPreviewPlayer = nil;
+
+    [self.heroPreviewPlayer pause]; // no-op since already nil, kept for clarity
+
+    // Restore thumbnail instantly, fade out preview
+    self.heroThumbnailView.alphaValue = 1.0;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.duration = 0.2;
+        self.heroPreviewView.animator.alphaValue = 0.0;
+    } completionHandler:^{
+        [self.heroPreviewLayer removeFromSuperlayer];
+        self.heroPreviewLayer = nil;
     }];
-    self.heroPreviewLayer.opacity = 0.0;
-    [self.heroPreviewLayer addAnimation:fadeOut forKey:@"fadeOut"];
-    [CATransaction commit];
 }
 
 // ---------------------------------------------------------------------------
@@ -748,111 +776,13 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     self.collectionView.selectable = YES;
     [self.collectionView registerClass:[VideoCollectionItem class] forItemWithIdentifier:@"VideoItem"];
 
-    self.scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, kMiniPlayerHeight, cw, galleryH)];
+    self.scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, cw, galleryH)];
     self.scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.scrollView.documentView  = self.collectionView;
     self.scrollView.hasVerticalScroller   = YES;
     self.scrollView.hasHorizontalScroller = NO;
     self.scrollView.drawsBackground = NO;
     [self.contentArea addSubview:self.scrollView];
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Mini Player
-
-- (void)buildMiniPlayer {
-    CGFloat cw = self.contentArea.bounds.size.width;
-
-    self.miniPlayerView = [[NSVisualEffectView alloc]
-        initWithFrame:NSMakeRect(0, 0, cw, kMiniPlayerHeight)];
-    self.miniPlayerView.autoresizingMask = NSViewWidthSizable;
-    self.miniPlayerView.material    = NSVisualEffectMaterialHUDWindow;
-    self.miniPlayerView.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-    self.miniPlayerView.state = NSVisualEffectStateActive;
-    self.miniPlayerView.wantsLayer = YES;
-
-    // Top border
-    NSView *topBorder = [[NSView alloc] initWithFrame:NSMakeRect(0, kMiniPlayerHeight - 1, cw, 1)];
-    topBorder.autoresizingMask = NSViewWidthSizable;
-    topBorder.wantsLayer = YES;
-    topBorder.layer.backgroundColor = [[NSColor colorWithWhite:0.25 alpha:0.5] CGColor];
-    [self.miniPlayerView addSubview:topBorder];
-
-    // Thumbnail
-    self.miniPlayerThumb = [[NSImageView alloc] initWithFrame:NSMakeRect(12, 10, 86, 55)];
-    self.miniPlayerThumb.wantsLayer = YES;
-    self.miniPlayerThumb.layer.cornerRadius = 6.0;
-    self.miniPlayerThumb.layer.masksToBounds = YES;
-    self.miniPlayerThumb.imageScaling = NSImageScaleProportionallyUpOrDown;
-    [self.miniPlayerView addSubview:self.miniPlayerThumb];
-
-    // "Currently Playing" label
-    NSTextField *nowPlaying = [[NSTextField alloc] initWithFrame:NSMakeRect(108, 42, 220, 12)];
-    nowPlaying.stringValue = @"Currently Playing";
-    nowPlaying.font = [NSFont systemFontOfSize:9.5];
-    nowPlaying.textColor = [NSColor secondaryLabelColor];
-    nowPlaying.editable = NO; nowPlaying.bordered = NO;
-    nowPlaying.backgroundColor = [NSColor clearColor];
-    [self.miniPlayerView addSubview:nowPlaying];
-
-    self.miniPlayerTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(108, 26, 220, 17)];
-    self.miniPlayerTitleLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-    self.miniPlayerTitleLabel.textColor = [NSColor labelColor];
-    self.miniPlayerTitleLabel.editable = NO; self.miniPlayerTitleLabel.bordered = NO;
-    self.miniPlayerTitleLabel.backgroundColor = [NSColor clearColor];
-    self.miniPlayerTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self.miniPlayerView addSubview:self.miniPlayerTitleLabel];
-
-    self.miniPlayerMetaLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(108, 12, 220, 13)];
-    self.miniPlayerMetaLabel.font = [NSFont systemFontOfSize:10];
-    self.miniPlayerMetaLabel.textColor = [NSColor secondaryLabelColor];
-    self.miniPlayerMetaLabel.editable = NO; self.miniPlayerMetaLabel.bordered = NO;
-    self.miniPlayerMetaLabel.backgroundColor = [NSColor clearColor];
-    [self.miniPlayerView addSubview:self.miniPlayerMetaLabel];
-
-    // Playback controls (centered)
-    CGFloat ctrlX = (cw - 120) / 2.0;
-    NSArray<NSString *> *ctrlSymbols = @[@"backward.end.fill", @"pause.fill", @"forward.end.fill"];
-    for (NSInteger i = 0; i < 3; i++) {
-        NSButton *b = [[NSButton alloc] initWithFrame:NSMakeRect(ctrlX + i * 40, 22, 32, 32)];
-        b.bordered = NO;
-        if (@available(macOS 11.0, *)) {
-            [b setImage:[NSImage imageWithSystemSymbolName:ctrlSymbols[i] accessibilityDescription:nil]];
-        }
-        b.contentTintColor = [NSColor labelColor];
-        if (i == 0) { b.target = self; b.action = @selector(prevWallpaper:); }
-        if (i == 1) { self.miniPlayPauseButton = b; b.target = self; b.action = @selector(miniPlayPause:); }
-        if (i == 2) { b.target = self; b.action = @selector(nextWallpaper:); }
-        [self.miniPlayerView addSubview:b];
-    }
-
-    // Right controls: volume + shuffle
-    CGFloat rvX = cw - 160;
-    NSButton *volBtn = [[NSButton alloc] initWithFrame:NSMakeRect(rvX, 22, 26, 26)];
-    volBtn.bordered = NO;
-    if (@available(macOS 11.0, *)) {
-        [volBtn setImage:[NSImage imageWithSystemSymbolName:@"speaker.wave.2" accessibilityDescription:nil]];
-    }
-    volBtn.contentTintColor = [NSColor secondaryLabelColor];
-    volBtn.target = self; volBtn.action = @selector(toolbarToggleMute:);
-    [self.miniPlayerView addSubview:volBtn];
-
-    NSSlider *volSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(rvX + 30, 26, 80, 18)];
-    volSlider.minValue = 0; volSlider.maxValue = 1; volSlider.doubleValue = 0.7;
-    volSlider.target = self; volSlider.action = @selector(noop:);
-    [self.miniPlayerView addSubview:volSlider];
-
-    NSButton *shuffleBtn = [[NSButton alloc] initWithFrame:NSMakeRect(cw - 36, 22, 26, 26)];
-    shuffleBtn.bordered = NO;
-    shuffleBtn.autoresizingMask = NSViewMinXMargin;
-    if (@available(macOS 11.0, *)) {
-        [shuffleBtn setImage:[NSImage imageWithSystemSymbolName:@"shuffle" accessibilityDescription:nil]];
-    }
-    shuffleBtn.contentTintColor = [NSColor secondaryLabelColor];
-    shuffleBtn.target = self; shuffleBtn.action = @selector(toolbarShuffle:);
-    [self.miniPlayerView addSubview:shuffleBtn];
-
-    [self.contentArea addSubview:self.miniPlayerView];
 }
 
 // ---------------------------------------------------------------------------
@@ -883,7 +813,7 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     [self updateCountLabel];
     [self updateSidebarBadges];
     [self updateHeroForCurrentWallpaper];
-    [self updateMiniPlayer];
+    [self updateMuteButton];
 }
 
 // ---------------------------------------------------------------------------
@@ -932,7 +862,6 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 
         if (wasMuted) [self.videoRenderer mute];
         [self updateHeroForWallpaper:video];
-        [self updateMiniPlayer];
         [self.collectionView reloadData];
         [self updateSidebarBadges];
     }
@@ -1149,37 +1078,6 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 }
 
 // ---------------------------------------------------------------------------
-#pragma mark - Mini Player Updates
-
-- (void)updateMiniPlayer {
-    if (!self.playingWallpaperId) return;
-    NSPredicate *p = [NSPredicate predicateWithFormat:@"id == %@", self.playingWallpaperId];
-    NSDictionary *vid = [[self.videos filteredArrayUsingPredicate:p] firstObject];
-    if (!vid) return;
-
-    self.miniPlayerTitleLabel.stringValue = vid[@"title"] ?: @"";
-    self.miniPlayerMetaLabel.stringValue  = @"4K";
-
-    NSString *vidId   = vid[@"id"];
-    NSString *vidPath = vid[@"path"];
-    ThumbnailCache *cache = [ThumbnailCache sharedCache];
-    NSImage *cached = [cache cachedThumbnailForId:vidId];
-    if (cached) { self.miniPlayerThumb.image = cached; return; }
-
-    __weak typeof(self) ws = self;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSString *dir     = [vidPath stringByDeletingLastPathComponent];
-        NSString *preview = [dir stringByAppendingPathComponent:@"preview.jpg"];
-        NSImage *thumb = nil;
-        if ([[NSFileManager defaultManager] fileExistsAtPath:preview]) {
-            thumb = [cache thumbnailForPreviewPath:preview wallpaperId:vidId];
-        }
-        if (!thumb) thumb = [cache thumbnailForVideoPath:vidPath wallpaperId:vidId];
-        if (thumb) dispatch_async(dispatch_get_main_queue(), ^{ ws.miniPlayerThumb.image = thumb; });
-    });
-}
-
-// ---------------------------------------------------------------------------
 #pragma mark - Favorites
 
 - (NSMutableSet<NSString *> *)loadFavoriteIds {
@@ -1260,7 +1158,6 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
         [[NSUserDefaults standardUserDefaults] setObject:video[@"id"] forKey:kDefaultsLastWallpaperId];
         if (wasMuted) [self.videoRenderer mute];
         [self updateHeroForWallpaper:video];
-        [self updateMiniPlayer];
         [self.collectionView reloadData];
     }
 }
@@ -1277,7 +1174,6 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
         self.playingWallpaperId = video[@"id"];
         [[NSUserDefaults standardUserDefaults] setObject:video[@"id"] forKey:kDefaultsLastWallpaperId];
         [self updateHeroForWallpaper:video];
-        [self updateMiniPlayer];
         [self.collectionView reloadData];
     }
 }
@@ -1294,14 +1190,8 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
         self.playingWallpaperId = video[@"id"];
         [[NSUserDefaults standardUserDefaults] setObject:video[@"id"] forKey:kDefaultsLastWallpaperId];
         [self updateHeroForWallpaper:video];
-        [self updateMiniPlayer];
         [self.collectionView reloadData];
     }
-}
-
-- (void)miniPlayPause:(id)sender {
-    // Toggle between play/pause on the desktop renderer
-    [self.videoRenderer play];   // AVVideoRenderer handles no-op if already playing
 }
 
 - (void)toolbarToggleMute:(id)sender {
@@ -1311,6 +1201,19 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
         [self.videoRenderer mute];
     }
     [[NSUserDefaults standardUserDefaults] setBool:self.videoRenderer.muted forKey:kDefaultsLastMuteState];
+    [self updateMuteButton];
+}
+
+- (void)updateMuteButton {
+    if (!self.muteToolbarButton) return;
+    BOOL muted = self.videoRenderer.muted;
+    if (@available(macOS 11.0, *)) {
+        NSString *sym = muted ? @"speaker.slash.fill" : @"speaker.wave.2";
+        [self.muteToolbarButton setImage:[NSImage imageWithSystemSymbolName:sym accessibilityDescription:nil]];
+    }
+    self.muteToolbarButton.contentTintColor = muted
+        ? [NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0]
+        : [NSColor secondaryLabelColor];
 }
 
 - (void)toolbarShuffle:(id)sender {
@@ -1322,7 +1225,7 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 
 - (void)showSettingsSheet:(id)sender {
     NSWindow *sheet = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 480, 380)
+        initWithContentRect:NSMakeRect(0, 0, 480, 500)
                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                     backing:NSBackingStoreBuffered
                       defer:NO];
@@ -1333,7 +1236,7 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     sv.layer.backgroundColor = [[NSColor colorWithRed:0.11 green:0.11 blue:0.13 alpha:1.0] CGColor];
 
     CGFloat lp = 24;
-    CGFloat y  = 320;
+    CGFloat y  = 440;
 
     // Path
     NSTextField *pathHdr = [self settingsHeader:@"Wallpaper Location" y:y];
