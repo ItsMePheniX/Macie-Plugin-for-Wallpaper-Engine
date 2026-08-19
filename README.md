@@ -6,9 +6,9 @@ A lightweight macOS desktop application that plays Wallpaper Engine videos as de
 
 ## Project Overview
 
-This application plays Wallpaper Engine video wallpapers(.mp4, .mkv,) directly on your macOS desktop, behind your desktop icons. Browse and select from your Wallpaper Engine library using an intuitive gallery interface with thumbnail previews, sidebar navigation, and performance optimizations.
+This application plays Wallpaper Engine video wallpapers directly on your macOS desktop, behind your desktop icons. Browse and select from your Wallpaper Engine library using an intuitive gallery interface with thumbnail previews, sidebar navigation, and performance optimizations.
 
-## Screenshot
+## Screenshots
 
 ![MacieWallpaper Gallery](G5LuffySS.png)
 ![MacieWallpaper Gallery](m4SS.png)
@@ -19,36 +19,46 @@ This application plays Wallpaper Engine video wallpapers(.mp4, .mkv,) directly o
 ### Technology Stack
 
 - **Build System**: CMake 3.20+
-- **Core Engine**: C++17
+- **Core Engine**: C++17 (`Macie::AssetManager`, exposed through a C++ API implemented in Objective-C++)
 - **macOS Bridge**: Objective-C++
 - **UI Layer**: Objective-C + AppKit (NSWindow, NSCollectionView)
 - **Video Playback**: AVFoundation (hardware-accelerated)
 - **Rendering**: AVPlayerLayer + QuartzCore
-- **Frameworks**: Cocoa, AVFoundation, CoreMedia, Metal, QuartzCore, IOKit
+- **Image Decoding**: ImageIO (thread-safe thumbnail generation)
+- **Frameworks**: Cocoa, AVFoundation, CoreMedia, Metal, QuartzCore, IOKit, ServiceManagement, ImageIO, UniformTypeIdentifiers
 
 ## Current Features
 
 ### Implemented
 - **Desktop Wallpaper Video Playback**: Seamless video looping behind desktop icons
 - **Thumbnail Caching**: Memory + disk cache for fast loading (`~/Library/Caches/MacieWallpaper/thumbnails/`)
+- **Metadata Caching**: Real resolution, duration, and file size read once per wallpaper and persisted (`~/Library/Caches/MacieWallpaper/metadata.plist`)
 - **Performance Monitor**: Auto-pause on battery power or fullscreen apps (configurable)
-- **Async Thumbnail Generation**: Non-blocking thumbnail extraction using AVAssetImageGenerator
+- **Sleep/Wake Handling**: Playback pauses on sleep and is re-evaluated on wake
+- **Async Thumbnail Generation**: Non-blocking extraction via ImageIO, falling back to AVAssetImageGenerator for videos without a preview image
 - **Video Selection**: Click any thumbnail to instantly switch wallpapers
+- **Hero Preview Panel**: Muted looping preview of the active wallpaper with its real metadata
+- **Favorites**: Per-wallpaper heart toggle, persisted in NSUserDefaults
+- **Recents**: The last 20 played wallpapers, in most-recent-first order
+- **Search**: Live title filtering, scoped to the active sidebar section
 - **Audio Controls**: State-aware mute/unmute toggle (muted by default)
+- **Keyboard Shortcuts**: Next `Cmd+]`, Previous `Cmd+[`, Random `Cmd+R`, Toggle Mute `Shift+Cmd+M`, Settings `Cmd+,`, Change Location `Cmd+L`, Gallery `Cmd+0`
 - **Wallpaper Engine Integration**: Automatic scanning of Steam Workshop directory
 - **Welcome Window**: First-launch setup wizard for steamapps selection
-- **In-Window Preferences**: Settings panel with path, performance, and cache options
+- **Settings Sheet**: Path, performance, launch-at-login, and cache options, opened from the sidebar, the toolbar, or `Cmd+,`
 - **Configurable Steam Path**: Folder picker to select steamapps location (saved in preferences)
 - **Window Management**: Positioned at `kCGDesktopWindowLevel - 1` for proper layering
 - **Mouse Passthrough**: Desktop icons remain fully clickable
+- **Display Change Handling**: The desktop window is re-framed when the screen resolution or arrangement changes
 - **Universal Binary**: Supports both Apple Silicon (ARM64) and Intel (x86_64)
 
 ### Video Playback Features
 - AVFoundation-based renderer with hardware acceleration
 - AVPlayerLooper for seamless, gap-free looping
 - Efficient buffering (2 second forward buffer)
-- Automatic video file validation
-- Support for MP4, MOV, and all AVFoundation-compatible formats
+- Existence check before loading, plus KVO on the item's status to catch load failures
+- Whatever AVFoundation can decode: MP4 and MOV in practice. Wallpapers in container
+  formats AVFoundation does not support (`.mkv`, for example) are listed but will not play.
 
 ### Performance Characteristics
 - **CPU Usage**: ~2-5% during playback (hardware accelerated)
@@ -78,34 +88,43 @@ This application plays Wallpaper Engine video wallpapers(.mp4, .mkv,) directly o
 - Selected path saved to NSUserDefaults for persistence
 - Validates folder contains `/workshop/content/431960/`
 - Menu item to change location anytime (Cmd+L)
-- Custom JSON parser for project.json files
+- `project.json` parsed with NSJSONSerialization behind a C++ interface (`Macie::AssetManager`)
 - Filters for video-type wallpapers only
 - Validates file existence before adding to collection
-- Extracts: title, type, file path, preview, description
+- Extracts: id, title, type, video file path, preview image, description, tags
 
 ### 4. Thumbnail Caching
 - Dual-layer cache: NSCache (memory) + disk storage (PNG files)
 - Cache location: `~/Library/Caches/MacieWallpaper/thumbnails/`
 - Memory cache limit: 100 items
-- Async generation with GCD concurrent queue
-- Prioritizes preview.jpg, falls back to video frame extraction
-- Background pre-generation for all wallpapers
+- Async generation on a GCD global queue
+- Decoding and encoding go through ImageIO, which is safe off the main thread (unlike `NSImage lockFocus`)
+- Uses the preview image declared in `project.json`, falls back to common preview filenames, then to a video frame
 
-### 5. Performance Monitor
+### 5. Video Metadata
+- Resolution and duration read from the asset's video track (`loadTracksWithMediaType:`), with `preferredTransform` applied so rotated videos report the right dimensions
+- File size read from the filesystem
+- Results persisted to `~/Library/Caches/MacieWallpaper/metadata.plist`, invalidated when the video's size changes
+- Concurrent requests for the same wallpaper are coalesced into a single read; completions are delivered on the main queue
+
+### 6. Performance Monitor
 - Power source monitoring via IOPSNotificationCreateRunLoopSource
 - Fullscreen app detection via CGWindowListCopyWindowInfo
 - Configurable pause-on-battery option
 - Configurable pause-on-fullscreen option
+- Sleep/wake observed on the NSWorkspace notification center
 - Delegate pattern for playback control notifications
 
-### 6. Gallery UI
-- Dark-themed interface with sidebar navigation
+### 7. Gallery UI
+- Dark-themed interface with sidebar navigation (Library, Favorites, Recent, Random, collections, Settings, About)
+- Hero panel with a looping preview and the active wallpaper's real resolution, duration, and file size
 - NSCollectionView with flow layout
 - Wallpaper cards with hover animations (CATransform3D scale)
 - Selection highlighting with blue border and glow
-- Item size: 200x150 with 12px rounded corners
-- Grid spacing: 20pt between items
-- Resizable window (minimum 800x500, default 1000x650)
+- Item size: 195x160 with 12px rounded corners
+- Grid spacing: 16pt between items
+- Every playback entry point (card click, Random, Next/Prev, shuffle) routes through one apply path, so persistence, recents, and the hero panel cannot diverge
+- Resizable window (minimum 1100x720, default 1280x800)
 
 ## Project Structure
 
@@ -114,34 +133,34 @@ Macie-Plugin-for-Wallpaper-Engine/
 ├── CMakeLists.txt              # Build configuration
 ├── include/                    # Header files
 │   ├── AppDelegate.h
-│   ├── AssetManager.hpp        # C++ asset management
+│   ├── AssetManager.hpp        # C++ asset management interface
 │   ├── MacieAssetManagerWrapper.h  # Obj-C++ bridge wrapper for AssetManager
 │   ├── AVVideoRenderer.h
-│   ├── ConfigManager.hpp       # Configuration (placeholder)
-│   ├── Constants.h             # App constants and defaults
-│   ├── DesktopWindowManager.h  # Window management (placeholder)
+│   ├── Constants.h             # App constants and defaults (extern declarations)
 │   ├── MainWindowController.h
 │   ├── PerformanceMonitor.h    # Battery/fullscreen detection
-│   ├── PreferencesWindowController.h
 │   ├── ThumbnailCache.h        # Thumbnail caching system
 │   ├── VideoCollectionItem.h
-│   ├── WallpaperEngine.hpp     # Core engine (placeholder)
+│   ├── WallpaperMetadataCache.h # Resolution/duration/size cache
 │   └── WelcomeWindowController.h
 ├── src/
 │   ├── main.m                  # Application entry point
-│   ├── AppDelegate.mm          # App lifecycle management
-│   ├── core/                   # C++ core engine
-│   │   ├── AssetManager.cpp    # Workshop scanning, JSON parsing
+│   ├── AppDelegate.mm          # App lifecycle, menu bar, sleep/wake
+│   ├── core/
+│   │   ├── Constants.m         # Single definition point for the constants
+│   │   ├── AssetManager.mm     # Workshop scanning, NSJSONSerialization parsing
 │   │   ├── MacieAssetManagerWrapper.mm  # Obj-C++ wrapper (owns AssetManager)
 │   │   ├── PerformanceMonitor.mm # Power source & fullscreen monitoring
-│   │   └── ThumbnailCache.mm   # Memory + disk thumbnail cache
+│   │   ├── ThumbnailCache.mm   # Memory + disk thumbnail cache (ImageIO)
+│   │   └── WallpaperMetadataCache.mm # Video metadata, persisted to a plist
 │   ├── renderers/
 │   │   └── AVVideoRenderer.mm  # Video playback & looping
 │   └── ui/                     # User interface
-│       ├── MainWindowController.mm  # Gallery window with sidebar
-│       ├── PreferencesWindowController.m # Standalone preferences
+│       ├── MainWindowController.mm  # Gallery window, sidebar, settings sheet
 │       ├── VideoCollectionItem.m    # Grid item with hover effects
 │       └── WelcomeWindowController.m # First-launch wizard
+├── resources/
+│   └── AppIcon.icns            # Bundled app icon
 └── build/                      # CMake build output
     └── MacieWallpaper.app
 ```
@@ -150,7 +169,7 @@ Macie-Plugin-for-Wallpaper-Engine/
 
 ### Phase 1: Core Foundation (COMPLETED)
 - [x] CMake build system configuration
-- [x] C++ core engine structure (AssetManager, WallpaperEngine, ConfigManager)
+- [x] C++ core engine structure (`Macie::AssetManager` + Obj-C++ wrapper)
 - [x] Objective-C++ bridge layer
 - [x] Desktop window creation and positioning
 - [x] Window level management (behind desktop icons)
@@ -167,8 +186,8 @@ Macie-Plugin-for-Wallpaper-Engine/
 
 ### Phase 3: Wallpaper Engine Integration (COMPLETED)
 - [x] Workshop directory scanning
-- [x] project.json parser (custom lightweight parser)
-- [x] Video metadata extraction (title, type, file path)
+- [x] project.json parsing (NSJSONSerialization)
+- [x] Video metadata extraction (title, type, file path, preview, description, tags)
 - [x] File existence validation
 - [x] Type filtering (video wallpapers only)
 
@@ -192,36 +211,35 @@ Macie-Plugin-for-Wallpaper-Engine/
 - [x] Persistent thumbnail cache (memory + disk)
 - [x] Dark-themed UI with sidebar navigation
 - [x] Welcome window for first-launch setup
-- [x] In-window preferences panel
+- [x] Settings sheet hosted by the gallery window
 - [x] Hover animations on wallpaper cards
 - [x] Performance monitor (battery/fullscreen detection)
-- [x] Launch at login option (toggle in Preferences, uses SMAppService on macOS 13+)
-- [ ] Additional keyboard shortcuts
+- [x] Launch at login option (toggle in Settings, uses SMAppService on macOS 13+)
+- [x] Additional keyboard shortcuts (next/previous/random/mute, plus a standard Edit menu)
+- [x] Real per-wallpaper metadata (resolution, duration, file size) with a persistent cache
 
-### Phase 6: Advanced Features (May or may not do it)
+### Phase 6: Advanced Features
+- [x] Favorites and collections system
+- [x] Search and filter in gallery (title search, scoped to the active section)
+- [x] Sleep/wake event handling
 - [ ] Multi-monitor support (different wallpapers per screen)
-- [ ] Favorites and collections system
 - [ ] Playlist mode with auto-rotation
 - [ ] Time-based wallpaper switching
 - [ ] Custom video import (drag and drop)
 - [ ] Scene wallpaper support (3D/interactive)
 - [ ] Performance profiles (quality presets)
 - [ ] Video playback speed control
-- [ ] Search and filter in gallery
 - [ ] Custom video filters/effects
 
 
 ## Future Enhancements
 
 Additional features under consideration:
-- Favorites and collections system
-- Search bar with filters (resolution, duration, tags)
 - Preview panel with larger video playback
 - iCloud settings sync
 - Multi-monitor support with per-display wallpapers
-- Sleep/wake event handling
-- Launch at login option
 - Playlist mode with scheduling
+- Filtering by resolution, duration, and tags (tags are already parsed, just not surfaced)
 
 ## Requirements
 
@@ -254,7 +272,10 @@ cmake --build build
 open build/MacieWallpaper.app
 ```
 
-### VS Code Tasks (Pre-configured)
+### VS Code Tasks
+
+`.vscode/` is gitignored, so a fresh clone has no tasks defined. If you add your own
+`tasks.json`, these are the four that map to the workflow above:
 
 ```bash
 # Configure build
@@ -277,22 +298,26 @@ Cmd+Shift+P -> "Tasks: Run Task" -> "CMake: Clean"
    - Or: `/Users/[username]/steamapps` (if you've moved Steam)
    - Must contain: `workshop/content/431960/` (Wallpaper Engine workshop)
 
-2. **Automatic Scan**: App scans your Wallpaper Engine videos and caches thumbnails
+2. **Automatic Scan**: App scans your Wallpaper Engine videos; thumbnails and metadata are generated lazily as cards appear
 3. **Gallery Opens**: Browse thumbnails in a dark-themed gallery with sidebar
 4. **Select Wallpaper**: Click any thumbnail to set as wallpaper
-5. **Audio Control**: Use the "Mute/Unmute" button in the sidebar
-6. **Preferences**: Click "Preferences" in sidebar to access settings:
+5. **Browse**: Use the sidebar for Library, Favorites, Recent, Random, and keyword collections, or the search field to filter by title
+6. **Audio Control**: Use the speaker button in the toolbar, or `Shift+Cmd+M`
+7. **Settings**: Click "Settings" in the sidebar, the gear in the toolbar, or press `Cmd+,`:
    - Change Steam folder location
    - Enable/disable pause on battery
    - Enable/disable pause when apps are fullscreen
+   - Launch at login
    - Clear thumbnail cache
-7. **Quit**: Press `Cmd+Q` or choose Quit from menu
+8. **Quit**: Press `Cmd+Q` or choose Quit from menu
+
+Closing the gallery leaves the wallpaper playing; click the Dock icon to bring the gallery back.
 
 ## Known Limitations
 
-- **Single Monitor**: Multi-monitor support not yet implemented
+- **Single Monitor**: The wallpaper is drawn on the main screen only
 - **Video Types Only**: Only supports video wallpapers (no scenes or web types)
-- **Basic JSON Parser**: Custom parser, not a full JSON library
+- **Keyword Collections**: Sidebar collections are keyword-matched against wallpaper titles, not user-defined
 - **No Playlist Mode**: Manual wallpaper selection required
 
 ## Troubleshooting
@@ -308,7 +333,8 @@ Cmd+Shift+P -> "Tasks: Run Task" -> "CMake: Clean"
 - System may reset window level on display changes
 
 ### Video Not Playing
-- Check video file format (MP4, MOV recommended)
+- Check the container format — AVFoundation handles MP4 and MOV; `.mkv` and other
+  unsupported containers appear in the gallery but fail to load
 - Verify file exists and is not corrupted
 - Check Console.app for AVFoundation errors
 
@@ -322,11 +348,11 @@ cmake --build build
 
 ## Code Quality
 
-- Zero compilation warnings
+- Builds clean with `-Wall -Wextra` (only `-Wno-unused-parameter`, since AppKit delegate and target/action methods must declare parameters they don't use)
 - CamelCase naming conventions enforced
 - ARC (Automatic Reference Counting) enabled
-- No deprecated API usage
-- Clean codebase (minimal comments, no emojis)
+- Deprecated APIs avoided where a replacement exists at the 12.0 deployment target; `AVAssetImageGenerator` is the one exception, where the macOS 13+ async API is used behind an `@available` check and the older synchronous call is kept as the fallback
+- Off-main-thread work (thumbnails, metadata) uses ImageIO and AVFoundation rather than AppKit drawing
 
 ## Design Decisions
 
@@ -345,14 +371,13 @@ cmake --build build
 ### Why AVFoundation?
 - **Native framework**: No external dependencies
 - **Hardware acceleration**: VideoToolbox integration
-- **Codec support**: All formats out of the box
+- **Codec support**: Every format the system can already decode
 - **Efficiency**: Minimal CPU and battery impact
 
-### Why Custom JSON Parser?
-- **Simplicity**: Only need basic key-value extraction
-- **No dependencies**: Avoid external libraries
-- **Sufficient**: Works reliably for project.json structure
-- **Lightweight**: Minimal code footprint
+### Why NSJSONSerialization?
+- **Correctness**: Handles escapes, nesting, and unicode that a hand-rolled key scanner gets wrong
+- **No dependencies**: Ships with the platform, so nothing is vendored
+- **Still C++ at the seam**: `Macie::AssetManager` keeps its C++ interface; only the implementation is Objective-C++
 
 
 ## Contributing
