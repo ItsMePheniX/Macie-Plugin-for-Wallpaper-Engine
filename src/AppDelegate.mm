@@ -8,9 +8,7 @@
 #import "AppDelegate.h"
 #import "MainWindowController.h"
 #import "WelcomeWindowController.h"
-#import "PreferencesWindowController.h"
 #import "PerformanceMonitor.h"
-#import "ThumbnailCache.h"
 #import "MacieAssetManagerWrapper.h"
 #import "Constants.h"
 #import <vector>
@@ -20,6 +18,10 @@
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     NSLog(@"MacieWallpaper Started (macOS %@)", [[NSProcessInfo processInfo] operatingSystemVersionString]);
 
+    // The menu bar is built first so that Edit-menu shortcuts (copy/paste in the
+    // search field) work regardless of which setup path runs below.
+    [self setupMenuBar];
+
     self.assetManager = [[MacieAssetManagerWrapper alloc] init];
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -27,25 +29,38 @@
 
     if (!savedPath || ![[NSFileManager defaultManager] fileExistsAtPath:savedPath]) {
         NSLog(@"No valid steamapps path found. Showing welcome window...");
-
-        WelcomeWindowController *welcomeController = [[WelcomeWindowController alloc] initWithCompletionHandler:^(NSString *selectedPath) {
-            NSLog(@"User selected path: %@", selectedPath);
-            [self scanWallpaperEngineVideos];
-            [self createDesktopWindow];
-            [self playFirstAvailableVideo];
-            [self setupMenuBar];
-            [self setupPerformanceMonitor];
-        }];
-
-        [welcomeController showWindow:nil];
+        [self showWelcomeWindow];
         return;
     }
 
+    [self startWithConfiguredPath];
+}
+
+/// Everything that needs a valid steamapps path. Shared by the normal launch
+/// path and by first-launch completion.
+- (void)startWithConfiguredPath {
     [self scanWallpaperEngineVideos];
     [self createDesktopWindow];
     [self playFirstAvailableVideo];
-    [self setupMenuBar];
     [self setupPerformanceMonitor];
+}
+
+- (void)showWelcomeWindow {
+    __weak typeof(self) weakSelf = self;
+
+    // Retained by self.welcomeController: NSWindow.windowController is weak, so
+    // without this the controller would deallocate before the user can click Browse.
+    self.welcomeController = [[WelcomeWindowController alloc] initWithCompletionHandler:^(NSString *selectedPath) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSLog(@"User selected path: %@", selectedPath);
+        strongSelf.welcomeController = nil;
+        [strongSelf startWithConfiguredPath];
+    }];
+
+    [self.welcomeController showWindow:nil];
+    [self.welcomeController.window makeKeyAndOrderFront:nil];
 }
 
 - (void)scanWallpaperEngineVideos {
@@ -161,6 +176,12 @@
     [self.galleryController.window makeKeyAndOrderFront:nil];
 }
 
+/// Menu-action form of -showGallery. Menu items invoke their action with the item
+/// as the argument, so the selector has to take a sender.
+- (void)showGalleryWindow:(id)sender {
+    [self showGallery];
+}
+
 - (void)setupPerformanceMonitor {
     self.performanceMonitor = [[PerformanceMonitor alloc] init];
     self.performanceMonitor.delegate = self;
@@ -168,7 +189,7 @@
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(performanceSettingsChanged:)
-                                                 name:@"PerformanceSettingsChanged"
+                                                 name:kNotificationPerformanceSettingsChanged
                                                object:nil];
 
     // Sleep/wake observers must be registered on the workspace notification center,
@@ -222,7 +243,14 @@
     }
 }
 
+/// The desktop window must track the screen it lives on: a resolution change or
+/// a display swap leaves the old frame behind, showing the wallpaper at the wrong
+/// size (or off-screen entirely).
 - (void)screenParametersChanged:(NSNotification *)notification {
+    NSScreen *mainScreen = [NSScreen mainScreen];
+    if (!self.desktopWindow || !mainScreen) return;
+
+    [self.desktopWindow setFrame:mainScreen.frame display:YES];
     self.desktopWindow.level = kCGDesktopWindowLevel - 1;
     [self.desktopWindow orderBack:nil];
 }
@@ -255,6 +283,19 @@
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     return NO;
+}
+
+/// Closing the gallery leaves the app running so the wallpaper keeps playing;
+/// clicking the Dock icon has to be able to bring the window back.
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
+    if (flag) return YES;
+
+    if (self.welcomeController) {
+        [self.welcomeController.window makeKeyAndOrderFront:nil];
+    } else if (self.videoRenderer) {
+        [self showGallery];
+    }
+    return YES;
 }
 
 - (BOOL)selectSteamappsFolder {
@@ -319,44 +360,133 @@
     [self playFirstAvailableVideo];
 }
 
+#pragma mark - Menu Bar
+
 - (void)setupMenuBar {
-    NSMenu *mainMenu = [NSApp mainMenu];
-    if (!mainMenu) {
-        mainMenu = [[NSMenu alloc] init];
-        [NSApp setMainMenu:mainMenu];
-    }
+    // This app has no nib, so NSApp.mainMenu starts out nil and every menu —
+    // including the standard Edit menu that gives the search field its
+    // copy/paste/select-all shortcuts — has to be built by hand.
+    NSMenu *mainMenu = [[NSMenu alloc] init];
 
-    NSMenu *appMenu = [[NSMenu alloc] init];
-    NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
-    [appMenuItem setSubmenu:appMenu];
+    [mainMenu addItem:[self buildAppMenuItem]];
+    [mainMenu addItem:[self buildEditMenuItem]];
+    [mainMenu addItem:[self buildWallpaperMenuItem]];
+    [mainMenu addItem:[self buildWindowMenuItem]];
 
-    [appMenu addItemWithTitle:@"Preferences..."
-                       action:@selector(showPreferences:)
-                keyEquivalent:@","];
-    [appMenu addItem:[NSMenuItem separatorItem]];
-    [appMenu addItemWithTitle:@"Change Wallpaper Location..."
-                       action:@selector(changeSteamappsLocation:)
-                keyEquivalent:@"l"];
-    [appMenu addItem:[NSMenuItem separatorItem]];
-    [appMenu addItemWithTitle:@"Quit"
-                       action:@selector(terminate:)
-                keyEquivalent:@"q"];
-
-    [mainMenu insertItem:appMenuItem atIndex:0];
+    [NSApp setMainMenu:mainMenu];
 }
 
-- (void)showPreferences:(id)sender {
-    if (!self.preferencesController) {
-        self.preferencesController = [[PreferencesWindowController alloc] init];
+- (NSMenuItem *)buildAppMenuItem {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:kAppName];
 
-        __weak typeof(self) weakSelf = self;
-        self.preferencesController.onPathChanged = ^{
-            [weakSelf reloadWallpapers];
-        };
+    [menu addItemWithTitle:[NSString stringWithFormat:@"About %@", kAppName]
+                    action:@selector(orderFrontStandardAboutPanel:)
+             keyEquivalent:@""];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Settings..."
+                    action:@selector(showPreferences:)
+             keyEquivalent:@","];
+    [menu addItemWithTitle:@"Change Wallpaper Location..."
+                    action:@selector(changeSteamappsLocation:)
+             keyEquivalent:@"l"];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:[NSString stringWithFormat:@"Hide %@", kAppName]
+                    action:@selector(hide:)
+             keyEquivalent:@"h"];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:[NSString stringWithFormat:@"Quit %@", kAppName]
+                    action:@selector(terminate:)
+             keyEquivalent:@"q"];
+
+    NSMenuItem *item = [[NSMenuItem alloc] init];
+    item.submenu = menu;
+    return item;
+}
+
+- (NSMenuItem *)buildEditMenuItem {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Edit"];
+
+    [menu addItemWithTitle:@"Undo"  action:@selector(undo:)  keyEquivalent:@"z"];
+    NSMenuItem *redo = [menu addItemWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"Z"];
+    redo.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Cut"        action:@selector(cut:)        keyEquivalent:@"x"];
+    [menu addItemWithTitle:@"Copy"       action:@selector(copy:)       keyEquivalent:@"c"];
+    [menu addItemWithTitle:@"Paste"      action:@selector(paste:)      keyEquivalent:@"v"];
+    [menu addItemWithTitle:@"Delete"     action:@selector(delete:)     keyEquivalent:@""];
+    [menu addItemWithTitle:@"Select All" action:@selector(selectAll:)  keyEquivalent:@"a"];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    // Targets nil so it travels the responder chain to whichever gallery window is
+    // in front, the same way the Wallpaper menu's items do.
+    [[menu addItemWithTitle:@"Find"
+                     action:@selector(focusSearchField:)
+              keyEquivalent:@"f"] setTarget:nil];
+
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Edit" action:NULL keyEquivalent:@""];
+    item.submenu = menu;
+    return item;
+}
+
+/// Playback shortcuts. These target nil so they travel the responder chain and
+/// reach MainWindowController while the gallery is the key window.
+- (NSMenuItem *)buildWallpaperMenuItem {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Wallpaper"];
+
+    [[menu addItemWithTitle:@"Next Wallpaper"
+                     action:@selector(nextWallpaper:)
+              keyEquivalent:@"]"] setTarget:nil];
+    [[menu addItemWithTitle:@"Previous Wallpaper"
+                     action:@selector(prevWallpaper:)
+              keyEquivalent:@"["] setTarget:nil];
+    [[menu addItemWithTitle:@"Random Wallpaper"
+                     action:@selector(playRandomWallpaper:)
+              keyEquivalent:@"r"] setTarget:nil];
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *mute = [menu addItemWithTitle:@"Toggle Mute"
+                                       action:@selector(toolbarToggleMute:)
+                                keyEquivalent:@"m"];
+    mute.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    mute.target = nil;
+
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Wallpaper" action:NULL keyEquivalent:@""];
+    item.submenu = menu;
+    return item;
+}
+
+- (NSMenuItem *)buildWindowMenuItem {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Window"];
+
+    [menu addItemWithTitle:@"Wallpaper Gallery"
+                    action:@selector(showGalleryWindow:)
+             keyEquivalent:@"0"];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+    [menu addItemWithTitle:@"Zoom"     action:@selector(performZoom:)        keyEquivalent:@""];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Bring All to Front" action:@selector(arrangeInFront:) keyEquivalent:@""];
+
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Window" action:NULL keyEquivalent:@""];
+    item.submenu = menu;
+
+    [NSApp setWindowsMenu:menu];
+    return item;
+}
+
+/// Cmd+, — the settings live in the gallery window's own sheet, so make sure the
+/// gallery is on screen and hand off to it.
+- (void)showPreferences:(id)sender {
+    if (!self.galleryController && !self.videoRenderer) {
+        // No library loaded yet, so there is no gallery to host the sheet — the
+        // only setting that can meaningfully change at this point is the location.
+        [self changeSteamappsLocation:sender];
+        return;
     }
 
-    [self.preferencesController showWindow:nil];
-    [self.preferencesController.window makeKeyAndOrderFront:nil];
+    [self showGallery];
+    [self.galleryController showSettingsSheet:sender];
 }
 
 @end
+

@@ -13,14 +13,16 @@
 // AppDelegate.mm imports the full header directly.
 @class MacieAssetManagerWrapper;
 @class MainWindowController;
-@class PreferencesWindowController;
+@class WelcomeWindowController;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate, PerformanceMonitorDelegate>
 
 @property (strong, nonatomic) NSWindow *desktopWindow;
 @property (strong, nonatomic) AVVideoRenderer *videoRenderer;
 @property (strong, nonatomic) MainWindowController *galleryController;
-@property (strong, nonatomic) PreferencesWindowController *preferencesController;
+/// Held strongly for the duration of first-launch setup: NSWindow.windowController
+/// is a weak reference, so nothing else keeps this alive while it is on screen.
+@property (strong, nonatomic) WelcomeWindowController *welcomeController;
 @property (strong, nonatomic) PerformanceMonitor *performanceMonitor;
 @property (strong, nonatomic) MacieAssetManagerWrapper *assetManager;
 

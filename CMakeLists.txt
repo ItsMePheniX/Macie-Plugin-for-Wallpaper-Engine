@@ -14,9 +14,12 @@ set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")  # Universal binary
 set(CMAKE_C_COMPILER "/usr/bin/clang")
 set(CMAKE_CXX_COMPILER "/usr/bin/clang++")
 
-# Enable Objective-C and Objective-C++ compilation
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fobjc-arc")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fobjc-arc")
+# Enable Objective-C and Objective-C++ compilation.
+# -Wno-unused-parameter: AppKit delegate and target/action methods routinely ignore
+# parameters they are required to declare, so the warning is noise here.
+set(WARNING_FLAGS "-Wall -Wextra -Wno-unused-parameter")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fobjc-arc ${WARNING_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fobjc-arc ${WARNING_FLAGS}")
 
 # Find required frameworks
 find_library(COCOA_LIBRARY Cocoa REQUIRED)
@@ -26,6 +29,10 @@ find_library(METAL_LIBRARY Metal REQUIRED)
 find_library(QUARTZCORE_LIBRARY QuartzCore REQUIRED)
 find_library(IOKIT_LIBRARY IOKit REQUIRED)
 find_library(SERVICEMANAGEMENT_LIBRARY ServiceManagement REQUIRED)
+find_library(IMAGEIO_LIBRARY ImageIO REQUIRED)
+# UniformTypeIdentifiers supplies UTTypePNG, used by ThumbnailCache to write PNGs
+# without the deprecated kUTTypePNG constant.
+find_library(UNIFORMTYPEIDENTIFIERS_LIBRARY UniformTypeIdentifiers REQUIRED)
 
 # Source files
 set(SOURCES
@@ -33,25 +40,26 @@ set(SOURCES
     src/main.m
     src/AppDelegate.mm
 
-    # Core C++ engine
-    src/core/AssetManager.cpp
+    # Core
+    src/core/Constants.m
+    src/core/AssetManager.mm               # Obj-C++: NSJSONSerialization behind a C++ API
     src/core/MacieAssetManagerWrapper.mm   # Typed Obj-C++ wrapper for AssetManager
     src/core/ThumbnailCache.mm
+    src/core/WallpaperMetadataCache.mm
     src/core/PerformanceMonitor.mm
-
-    # Future: src/core/WallpaperEngine.cpp   (scene/web wallpaper support)
-    # Future: src/core/ConfigManager.cpp     (JSON-based configuration)
 
     # Renderers (Objective-C++)
     src/renderers/AVVideoRenderer.mm
 
-    # Future: src/renderers/DesktopWindowManager.mm  (multi-monitor window management)
-
     # UI (Objective-C)
+    src/ui/DesignSystem.m                  # fonts, palette, spacing, control factories
     src/ui/MainWindowController.mm
+    src/ui/SidebarView.m
+    src/ui/HeroPanelView.m
+    src/ui/GalleryEmptyStateView.m
+    src/ui/SettingsSheetController.m
     src/ui/VideoCollectionItem.m
     src/ui/WelcomeWindowController.m
-    src/ui/PreferencesWindowController.m
 
     # Resources
     resources/AppIcon.icns
@@ -59,19 +67,21 @@ set(SOURCES
 
 # Header files
 set(HEADERS
-    include/WallpaperEngine.hpp
     include/AssetManager.hpp
     include/MacieAssetManagerWrapper.h
-    include/ConfigManager.hpp
     include/AVVideoRenderer.h
-    include/DesktopWindowManager.h
+    include/DesignSystem.h
     include/MainWindowController.h
+    include/SidebarView.h
+    include/HeroPanelView.h
+    include/GalleryEmptyStateView.h
+    include/SettingsSheetController.h
     include/VideoCollectionItem.h
     include/WelcomeWindowController.h
-    include/PreferencesWindowController.h
     include/AppDelegate.h
     include/Constants.h
     include/ThumbnailCache.h
+    include/WallpaperMetadataCache.h
     include/PerformanceMonitor.h
 )
 
@@ -88,6 +98,8 @@ target_link_libraries(${PROJECT_NAME}
     ${QUARTZCORE_LIBRARY}
     ${IOKIT_LIBRARY}
     ${SERVICEMANAGEMENT_LIBRARY}
+    ${IMAGEIO_LIBRARY}
+    ${UNIFORMTYPEIDENTIFIERS_LIBRARY}
 )
 
 # Include directories
