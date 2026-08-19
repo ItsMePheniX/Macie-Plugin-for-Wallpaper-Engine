@@ -13,9 +13,10 @@
 
 @property (strong, nonatomic, readonly) AVPlayer *player;
 @property (strong, nonatomic, readonly) AVPlayerLayer *playerLayer;
-@property (strong, nonatomic) AVPlayerLooper *looper;
-@property (nonatomic) float volume;
-@property (nonatomic) BOOL muted;
+/// Last non-zero volume, restored by -unmute. Set via -setVolume:.
+@property (nonatomic, readonly) float volume;
+/// Survives -loadAndPlayVideo:, so switching wallpapers keeps the audio state.
+@property (nonatomic, readonly) BOOL muted;
 
 - (instancetype)initWithWindow:(NSWindow *)window;
 - (BOOL)loadAndPlayVideo:(NSString *)filePath;

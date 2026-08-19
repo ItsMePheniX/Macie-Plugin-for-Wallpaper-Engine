@@ -2,10 +2,16 @@
 //  VideoCollectionItem.h
 //  MacieWallpaper - Video Collection View Item
 //
-//  Created on 2026-02-14. Redesigned 2026-08-02.
+//  Created on 2026-02-14. Redesigned 2026-08-02. Rebuilt on the design system
+//  2026-08-19.
 //
 
 #import <Cocoa/Cocoa.h>
+
+/// Card geometry. Exported because the flow layout in MainWindowController has to
+/// agree with it exactly; it previously carried its own copy of these numbers.
+extern const CGFloat kMacieCardWidth;
+extern const CGFloat kMacieCardHeight;
 
 @interface VideoCollectionItem : NSCollectionViewItem
 

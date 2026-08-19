@@ -4,48 +4,59 @@
 //
 //  Created on 2026-02-15.
 //
+//  Declarations only — the definitions live in src/core/Constants.m so every
+//  translation unit shares one instance instead of getting a private copy.
+//
 
 #ifndef Constants_h
 #define Constants_h
 
+#import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
+
 // App Information
-static NSString * const kAppName = @"MacieWallpaper";
-static NSString * const kAppVersion = @"1.0.0";
+extern NSString * const kAppName;
+extern NSString * const kAppVersion;
 
 // Steam Workshop Constants
-static NSString * const kWallpaperEngineAppId = @"431960";
-static NSString * const kWorkshopSubpath = @"workshop/content/431960";
+extern NSString * const kWallpaperEngineAppId;
+extern NSString * const kWorkshopSubpath;
 
 // UserDefaults Keys
-static NSString * const kDefaultsSteamappsPath    = @"steamappsPath";
-static NSString * const kDefaultsLastMuteState    = @"lastMuteState";
-static NSString * const kDefaultsLastWallpaperId  = @"lastWallpaperId";
-static NSString * const kDefaultsPauseOnBattery   = @"pauseOnBattery";
-static NSString * const kDefaultsPauseOnFullscreen = @"pauseOnFullscreen";
-static NSString * const kDefaultsFavoriteIds      = @"favoriteWallpaperIds";
-static NSString * const kDefaultsRecentIds        = @"recentWallpaperIds";
+extern NSString * const kDefaultsSteamappsPath;
+extern NSString * const kDefaultsLastMuteState;
+extern NSString * const kDefaultsLastWallpaperId;
+extern NSString * const kDefaultsPauseOnBattery;
+extern NSString * const kDefaultsPauseOnFullscreen;
+extern NSString * const kDefaultsFavoriteIds;
+extern NSString * const kDefaultsRecentIds;
+extern NSString * const kDefaultsGallerySortOrder;
+
+// Notification names
+extern NSString * const kNotificationPerformanceSettingsChanged;
+extern NSString * const kNotificationWallpaperFavoriteToggled;
 
 // Cache Settings
-static NSString * const kCacheDirectoryName = @"MacieWallpaper";
-static NSString * const kThumbnailCacheSubdir = @"thumbnails";
+extern NSString * const kCacheDirectoryName;
+extern NSString * const kThumbnailCacheSubdir;
+extern NSString * const kMetadataCacheFileName;
 
 // Thumbnail constants used by ThumbnailCache
-static const CGFloat kThumbnailWidth  = 200.0;
-static const CGFloat kThumbnailHeight = 150.0;
+extern const CGFloat kThumbnailWidth;
+extern const CGFloat kThumbnailHeight;
 
 // Window Sizes
-static const CGFloat kMainWindowWidth     = 1280.0;
-static const CGFloat kMainWindowHeight    = 800.0;
-static const CGFloat kMainWindowMinWidth  = 1100.0;
-static const CGFloat kMainWindowMinHeight = 720.0;
-static const CGFloat kWelcomeWindowWidth  = 520.0;
-static const CGFloat kWelcomeWindowHeight = 380.0;
+extern const CGFloat kMainWindowWidth;
+extern const CGFloat kMainWindowHeight;
+extern const CGFloat kMainWindowMinWidth;
+extern const CGFloat kMainWindowMinHeight;
+extern const CGFloat kWelcomeWindowWidth;
+extern const CGFloat kWelcomeWindowHeight;
 
 // Layout
-static const CGFloat kSidebarWidth        = 230.0;
-static const CGFloat kToolbarHeight       = 52.0;
-static const CGFloat kHeroHeight          = 280.0;
-static const CGFloat kMiniPlayerHeight    = 75.0;
-static const CGFloat kGalleryHeaderHeight = 44.0;
+extern const CGFloat kSidebarWidth;
+extern const CGFloat kToolbarHeight;
+extern const CGFloat kHeroHeight;
+extern const CGFloat kGalleryHeaderHeight;
 
 #endif /* Constants_h */
