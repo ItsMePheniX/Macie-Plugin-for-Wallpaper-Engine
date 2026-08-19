@@ -1,50 +1,114 @@
 //
 //  MainWindowController.mm
-//  MacieWallpaper - Main Window Controller (Premium UI rebuild 2026-08-02)
+//  MacieWallpaper - Main Window Controller
 //
-//  Functional logic (search, favorites persistence, launch-at-login, sleep/wake,
-//  restore-last-wallpaper, mute state) preserved from prior implementation.
-//  Only the visual layer has been replaced.
+//  Rebuilt on the design system 2026-08-19.
+//
+//  The sidebar, the hero panel, the settings sheet and the gallery's empty state
+//  now live in their own units. What is left here is this window's own layout —
+//  toolbar, gallery — and the wallpaper logic that drives it: which wallpaper is
+//  playing, what the gallery shows, and how every entry point reaches the desktop.
+//  Every font, colour and spacing value comes from DesignSystem.h.
 //
 
 #import "MainWindowController.h"
 #import "AVVideoRenderer.h"
 #import "Constants.h"
+#import "DesignSystem.h"
+#import "GalleryEmptyStateView.h"
+#import "HeroPanelView.h"
 #import "MacieAssetManagerWrapper.h"
+#import "SettingsSheetController.h"
+#import "SidebarView.h"
 #import "ThumbnailCache.h"
 #import "VideoCollectionItem.h"
-#import <AVFoundation/AVFoundation.h>
-#import <ServiceManagement/ServiceManagement.h>
+#import "WallpaperMetadataCache.h"
 #import <vector>
 
 // ---------------------------------------------------------------------------
-#pragma mark - Collection keyword → category mapping
+#pragma mark - Constants
 
-static NSDictionary<NSString *, NSArray<NSString *> *> *CollectionKeywords(void) {
-    return @{
-        @"Anime":      @[@"anime", @"manga", @"sakura", @"waifu", @"naruto", @"ghibli"],
-        @"Nature":     @[@"nature", @"forest", @"ocean", @"mountain", @"lake", @"cabin",
-                         @"wave", @"sky", @"beach", @"rain", @"snow", @"jungle"],
-        @"Cyberpunk":  @[@"cyber", @"neon", @"punk", @"city", @"urban", @"drift",
-                         @"rain city", @"alley", @"rain"],
-        @"Space":      @[@"space", @"star", @"galaxy", @"astronaut", @"cosmos",
-                         @"planet", @"nebula", @"universe"],
-        @"Games":      @[@"game", @"gaming", @"minecraft", @"fortnite", @"halo",
-                         @"zelda", @"pixel", @"retro"],
-        @"Movies":     @[@"movie", @"film", @"cinema", @"dune", @"blade runner",
-                         @"marvel", @"dc", @"star wars"],
-    };
+/// How many entries the Recent section keeps.
+static const NSUInteger kMaxRecentWallpapers = 20;
+
+/// Width of the gallery header's sort control.
+static const CGFloat kSortControlWidth = 156.0;
+
+/// Gallery sort orders, persisted so the choice survives a relaunch.
+///
+/// Duration is deliberately absent: WallpaperMetadataCache fills in only as cards
+/// scroll into view, so a duration sort would order the library by which cards the
+/// user happened to look at.
+typedef NS_ENUM(NSInteger, MacieGallerySort) {
+    MacieGallerySortTitleAscending  = 0,
+    MacieGallerySortTitleDescending = 1,
+    MacieGallerySortNewestFirst     = 2,
+    MacieGallerySortLargestFirst    = 3,
+};
+
+static NSArray<NSString *> *MacieSortTitles(void) {
+    return @[@"Name (A–Z)", @"Name (Z–A)", @"Recently Added", @"Largest First"];
 }
 
-// Sidebar selection tags
-typedef NS_ENUM(NSInteger, SidebarSection) {
-    SidebarSectionLibrary    = 0,
-    SidebarSectionFavorites  = 1,
-    SidebarSectionRecent     = 2,
-    SidebarSectionRandom     = 3,
-    SidebarSectionCollection = 100, // + index
-    SidebarSectionSettings   = 200,
+// ---------------------------------------------------------------------------
+#pragma mark - Gallery collection view
+
+/// Keystrokes the gallery reports upward.
+typedef NS_ENUM(NSInteger, MacieGalleryKey) {
+    MacieGalleryKeyActivate,   // Return — apply the focused wallpaper
+    MacieGalleryKeyPreview,    // Space  — show it in the hero panel only
+    MacieGalleryKeyCancel,     // Escape — drop focus and any preview
+    MacieGalleryKeyLeft,
+    MacieGalleryKeyRight,
+    MacieGalleryKeyUp,
+    MacieGalleryKeyDown,
 };
+
+/// Neither keystrokes nor right-clicks are reachable through
+/// NSCollectionViewDelegate, so the grid is a small subclass that reports both as
+/// blocks. All the policy stays in the controller; this is a pure input adapter.
+@interface MacieGalleryView : NSCollectionView
+/// Return YES to consume the key.
+@property (nonatomic, copy) BOOL (^onKey)(MacieGalleryKey key);
+/// `itemIndex` is -1 when the click missed every card.
+@property (nonatomic, copy) NSMenu * (^onContextMenuForItem)(NSInteger itemIndex);
+@end
+
+@implementation MacieGalleryView
+
+- (void)keyDown:(NSEvent *)event {
+    NSString *chars = event.charactersIgnoringModifiers;
+    unichar c = chars.length ? [chars characterAtIndex:0] : 0;
+
+    MacieGalleryKey key = MacieGalleryKeyActivate;
+    BOOL recognized = YES;
+    switch (c) {
+        case NSCarriageReturnCharacter:
+        case NSEnterCharacter:        key = MacieGalleryKeyActivate; break;
+        case ' ':                     key = MacieGalleryKeyPreview;  break;
+        case 0x1B:                    key = MacieGalleryKeyCancel;   break;  // Escape
+        case NSLeftArrowFunctionKey:  key = MacieGalleryKeyLeft;     break;
+        case NSRightArrowFunctionKey: key = MacieGalleryKeyRight;    break;
+        case NSUpArrowFunctionKey:    key = MacieGalleryKeyUp;       break;
+        case NSDownArrowFunctionKey:  key = MacieGalleryKeyDown;     break;
+        default: recognized = NO; break;
+    }
+
+    // Arrow keys are handled here rather than left to NSCollectionView's own
+    // navigation, because moving the focus ring and applying a wallpaper have to
+    // stay separate actions — see -collectionView:didSelectItemsAtIndexPaths:.
+    if (recognized && self.onKey && self.onKey(key)) return;
+    [super keyDown:event];
+}
+
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    if (!self.onContextMenuForItem) return [super menuForEvent:event];
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSIndexPath *indexPath = [self indexPathForItemAtPoint:point];
+    return self.onContextMenuForItem(indexPath ? indexPath.item : -1);
+}
+
+@end
 
 // ---------------------------------------------------------------------------
 #pragma mark - Class extension
@@ -58,65 +122,46 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 // Core
 @property (strong, nonatomic) AVVideoRenderer          *videoRenderer;
 @property (strong, nonatomic) MacieAssetManagerWrapper *assetManager;
+@property (strong, nonatomic) SettingsSheetController  *settingsController;
 
 // Data
-/// Full unfiltered list — never mutated after loadVideos.
+/// Full unfiltered list — never mutated after -loadVideos.
 @property (strong, nonatomic) NSArray<NSDictionary *> *videos;
-/// What the collection view currently shows (search + sidebar filtered).
+/// What the collection view currently shows (section + search + sort applied).
 @property (strong, nonatomic) NSArray<NSDictionary *> *filteredVideos;
 /// IDs of favorited wallpapers, persisted to NSUserDefaults.
 @property (strong, nonatomic) NSMutableSet<NSString *> *favoriteIds;
-/// IDs of recently played wallpapers (most-recent first, capped at 20).
+/// IDs of recently played wallpapers (most-recent first, capped).
 @property (strong, nonatomic) NSMutableArray<NSString *> *recentIds;
 /// ID of the wallpaper currently playing on the desktop.
 @property (strong, nonatomic) NSString *playingWallpaperId;
 /// Active sidebar section (drives filteredVideos).
-@property (assign, nonatomic) SidebarSection activeSidebarSection;
-/// Active collection name when activeSidebarSection == SidebarSectionCollection.
+@property (assign, nonatomic) MacieSidebarSection activeSection;
+/// Active collection name when activeSection >= MacieSidebarSectionCollection.
 @property (strong, nonatomic) NSString *activeCollectionName;
+/// Gallery sort order, persisted.
+@property (assign, nonatomic) MacieGallerySort sortOrder;
+/// id → @{@"size": bytes, @"date": unix seconds}. Filled by the same background
+/// pass that computes the sidebar's on-disk figures, so the size and date sorts
+/// cost no additional file I/O.
+@property (strong, nonatomic) NSDictionary<NSString *, NSDictionary *> *fileStats;
 
-// Sidebar
-@property (strong, nonatomic) NSVisualEffectView  *sidebarView;
-@property (strong, nonatomic) NSButton            *librarySidebarButton;
-@property (strong, nonatomic) NSButton            *favoritesSidebarButton;
-@property (strong, nonatomic) NSButton            *recentSidebarButton;
-@property (strong, nonatomic) NSButton            *randomSidebarButton;
-@property (strong, nonatomic) NSMutableArray<NSButton *> *collectionButtons;
-@property (strong, nonatomic) NSButton            *settingsSidebarButton;
-@property (strong, nonatomic) NSTextField         *libraryCountLabel;
-@property (strong, nonatomic) NSTextField         *favoritesCountLabel;
-@property (strong, nonatomic) NSTextField         *recentCountLabel;
-@property (strong, nonatomic) NSTextField         *storageValueLabel;
-@property (strong, nonatomic) NSView              *storageProgressTrack;
-@property (strong, nonatomic) NSView              *storageProgressFill;
-
-// Toolbar
+// Chrome
+@property (strong, nonatomic) SidebarView         *sidebar;
+@property (strong, nonatomic) NSView              *contentArea;
 @property (strong, nonatomic) NSSearchField       *searchField;
 @property (strong, nonatomic) NSButton            *muteToolbarButton;
-@property (strong, nonatomic) NSButton            *shuffleButton;
 
 // Hero
-@property (strong, nonatomic) NSView              *heroContainer;
-@property (strong, nonatomic) NSImageView         *heroThumbnailView;
-@property (strong, nonatomic) AVPlayer            *heroPreviewPlayer;
-@property (strong, nonatomic) AVPlayerLayer       *heroPreviewLayer;
-@property (strong, nonatomic) NSView              *heroPreviewView; // dedicated host for AVPlayerLayer
-@property (strong, nonatomic) NSTrackingArea      *heroTrackingArea;
-@property (strong, nonatomic) NSTextField         *heroTitleLabel;
-@property (strong, nonatomic) NSTextField         *heroMetaLabel;
-@property (strong, nonatomic) NSTextField         *heroDescLabel;
-@property (strong, nonatomic) NSView              *heroInfoPanel;
-@property (strong, nonatomic) NSButton            *heroFavoriteButton;
+@property (strong, nonatomic) HeroPanelView         *heroPanel;
 
 // Gallery
-@property (strong, nonatomic) NSCollectionView    *collectionView;
-@property (strong, nonatomic) NSScrollView        *scrollView;
-@property (strong, nonatomic) NSTextField         *galleryHeaderLabel;
-@property (strong, nonatomic) NSTextField         *countLabel;
-@property (strong, nonatomic) NSView              *contentArea;   // right of sidebar
-
-// Preferences panel (sheet / popover)
-@property (strong, nonatomic) NSTextField         *cacheSizeLabel;
+@property (strong, nonatomic) MacieGalleryView      *collectionView;
+@property (strong, nonatomic) NSScrollView          *scrollView;
+@property (strong, nonatomic) GalleryEmptyStateView *emptyState;
+@property (strong, nonatomic) NSTextField           *galleryHeaderLabel;
+@property (strong, nonatomic) NSTextField           *countLabel;
+@property (strong, nonatomic) NSPopUpButton         *sortPopup;
 
 @end
 
@@ -139,12 +184,13 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 
     self = [super initWithWindow:window];
     if (self) {
-        self.assetManager = assetManager;
-        self.videoRenderer = renderer;
-        self.favoriteIds = [self loadFavoriteIds];
-        self.recentIds   = [self loadRecentIds];
-        self.activeSidebarSection = SidebarSectionLibrary;
-        self.collectionButtons = [NSMutableArray array];
+        _assetManager  = assetManager;
+        _videoRenderer = renderer;
+        _favoriteIds   = [self loadFavoriteIds];
+        _recentIds     = [self loadRecentIds];
+        _activeSection = MacieSidebarSectionLibrary;
+        _fileStats     = @{};
+        _sortOrder     = [self loadSortOrder];
 
         [self setupWindow];
         [self loadVideos];
@@ -153,28 +199,41 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     return self;
 }
 
+- (MacieGallerySort)loadSortOrder {
+    NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:kDefaultsGallerySortOrder];
+    if (saved < MacieGallerySortTitleAscending || saved > MacieGallerySortLargestFirst) {
+        return MacieGallerySortTitleAscending;
+    }
+    return (MacieGallerySort)saved;
+}
+
 #pragma mark - Window Setup
 
 - (void)setupWindow {
     NSWindow *w = self.window;
-    w.title = @"";
+    w.title = kAppName;                 // hidden in the titlebar; names the Window menu entry
     w.titlebarAppearsTransparent = YES;
     w.titleVisibility = NSWindowTitleHidden;
     w.movableByWindowBackground = YES;
     w.minSize = NSMakeSize(kMainWindowMinWidth, kMainWindowMinHeight);
-    w.backgroundColor = [NSColor colorWithRed:0.067 green:0.071 blue:0.094 alpha:1.0];
+    w.backgroundColor = MacieBackgroundColor();
+    // The palette is dark-only. Without this, a Mac set to Light Mode resolves
+    // AppKit's semantic colours light and the text vanishes into these surfaces.
+    MacieApplyDarkAppearance(w);
 
-    // Full-window vibrancy background
-    NSVisualEffectView *bgEffect = [[NSVisualEffectView alloc]
-        initWithFrame:w.contentView.bounds];
+    NSVisualEffectView *bgEffect = [[NSVisualEffectView alloc] initWithFrame:w.contentView.bounds];
     bgEffect.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    bgEffect.material  = NSVisualEffectMaterialUnderWindowBackground;
+    bgEffect.material     = NSVisualEffectMaterialUnderWindowBackground;
     bgEffect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    bgEffect.state = NSVisualEffectStateActive;
+    bgEffect.state        = NSVisualEffectStateActive;
     [w.contentView addSubview:bgEffect];
 
     [self buildSidebar];
     [self buildContentArea];
+
+    // Arrow keys should walk the grid the moment the window opens, so the gallery
+    // is the initial responder rather than the search field.
+    w.initialFirstResponder = self.collectionView;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,232 +241,48 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 
 - (void)buildSidebar {
     NSView *cv = self.window.contentView;
-    CGFloat h  = cv.bounds.size.height;
 
-    self.sidebarView = [[NSVisualEffectView alloc]
-        initWithFrame:NSMakeRect(0, 0, kSidebarWidth, h)];
-    self.sidebarView.autoresizingMask = NSViewHeightSizable;
-    self.sidebarView.material      = NSVisualEffectMaterialSidebar;
-    self.sidebarView.blendingMode  = NSVisualEffectBlendingModeBehindWindow;
-    self.sidebarView.state         = NSVisualEffectStateActive;
-    self.sidebarView.wantsLayer    = YES;
+    self.sidebar = [[SidebarView alloc]
+        initWithFrame:NSMakeRect(0, 0, kSidebarWidth, cv.bounds.size.height)];
 
-    // Right border
-    NSView *border = [[NSView alloc] initWithFrame:NSMakeRect(kSidebarWidth - 1, 0, 1, h)];
-    border.autoresizingMask = NSViewHeightSizable;
-    border.wantsLayer = YES;
-    border.layer.backgroundColor = [[NSColor colorWithWhite:0.2 alpha:0.6] CGColor];
-    [self.sidebarView addSubview:border];
-
-    [cv addSubview:self.sidebarView];
-
-    CGFloat sideW = kSidebarWidth - 16;
-    CGFloat top   = h - 52;   // start below traffic lights
-
-    // Logo row
-    NSView *logoRow = [[NSView alloc] initWithFrame:NSMakeRect(8, top - 44, sideW, 44)];
-    logoRow.autoresizingMask = NSViewMinYMargin;
-    [self.sidebarView addSubview:logoRow];
-
-    // App icon badge (uses real bundle icon so it matches the Dock)
-    NSImageView *badge = [[NSImageView alloc] initWithFrame:NSMakeRect(0, 6, 34, 34)];
-    badge.image = [NSImage imageNamed:NSImageNameApplicationIcon];
-    badge.imageScaling = NSImageScaleProportionallyUpOrDown;
-    badge.wantsLayer = YES;
-    badge.layer.cornerRadius = 8.0;
-    badge.layer.masksToBounds = YES;
-    [logoRow addSubview:badge];
-
-    NSTextField *appName = [[NSTextField alloc] initWithFrame:NSMakeRect(40, 18, 140, 18)];
-    appName.stringValue = @"Macie";
-    appName.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
-    appName.textColor = [NSColor labelColor];
-    appName.editable = NO; appName.bordered = NO;
-    appName.backgroundColor = [NSColor clearColor];
-    [logoRow addSubview:appName];
-
-    NSTextField *appVer = [[NSTextField alloc] initWithFrame:NSMakeRect(40, 4, 140, 13)];
-    appVer.stringValue = [NSString stringWithFormat:@"v%@", kAppVersion];
-    appVer.font = [NSFont systemFontOfSize:10];
-    appVer.textColor = [NSColor secondaryLabelColor];
-    appVer.editable = NO; appVer.bordered = NO;
-    appVer.backgroundColor = [NSColor clearColor];
-    [logoRow addSubview:appVer];
-
-    CGFloat cursor = top - 44 - 12;
-
-    // LIBRARY section
-    cursor = [self addSectionLabel:@"LIBRARY" y:cursor - 18];
-
-    self.librarySidebarButton = [self sidebarButton:@"house.fill" title:@"Library" y:cursor - 32 tag:SidebarSectionLibrary];
-    cursor -= 36;
-    [self.sidebarView addSubview:self.librarySidebarButton];
-    self.libraryCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 10];
-    [self.sidebarView addSubview:self.libraryCountLabel];
-
-    self.favoritesSidebarButton = [self sidebarButton:@"heart.fill" title:@"Favorites" y:cursor - 32 tag:SidebarSectionFavorites];
-    cursor -= 36;
-    [self.sidebarView addSubview:self.favoritesSidebarButton];
-    self.favoritesCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 10];
-    [self.sidebarView addSubview:self.favoritesCountLabel];
-
-    self.recentSidebarButton = [self sidebarButton:@"clock.fill" title:@"Recent" y:cursor - 32 tag:SidebarSectionRecent];
-    cursor -= 36;
-    [self.sidebarView addSubview:self.recentSidebarButton];
-    self.recentCountLabel = [self badgeLabel:@"" x:kSidebarWidth - 40 y:cursor + 10];
-    [self.sidebarView addSubview:self.recentCountLabel];
-
-    self.randomSidebarButton = [self sidebarButton:@"shuffle" title:@"Random" y:cursor - 32 tag:SidebarSectionRandom];
-    cursor -= 36;
-    [self.sidebarView addSubview:self.randomSidebarButton];
-
-    // Divider
-    cursor -= 8;
-    [self addSidebarDivider:cursor];
-    cursor -= 8;
-
-    // COLLECTIONS section
-    cursor = [self addSectionLabel:@"COLLECTIONS" y:cursor - 18];
-
-    NSArray<NSString *> *collectionNames = @[@"Anime", @"Nature", @"Cyberpunk", @"Space", @"Games", @"Movies"];
-    for (NSInteger i = 0; i < collectionNames.count; i++) {
-        NSString *name = collectionNames[i];
-        NSButton *btn = [self sidebarButton:@"folder.fill" title:name y:cursor - 32 tag:SidebarSectionCollection + i];
-        cursor -= 36;
-        [self.sidebarView addSubview:btn];
-        [self.collectionButtons addObject:btn];
-    }
-
-    // Divider
-    cursor -= 8;
-    [self addSidebarDivider:cursor];
-    cursor -= 8;
-
-    // SYSTEM section
-    cursor = [self addSectionLabel:@"SYSTEM" y:cursor - 18];
-
-    self.settingsSidebarButton = [self sidebarButton:@"gearshape.fill" title:@"Settings" y:cursor - 32 tag:SidebarSectionSettings];
-    cursor -= 36;
-    [self.sidebarView addSubview:self.settingsSidebarButton];
-
-    NSButton *perfBtn = [self sidebarButton:@"chart.bar.fill" title:@"Performance" y:cursor - 32 tag:SidebarSectionSettings + 1];
-    cursor -= 36;
-    [self.sidebarView addSubview:perfBtn];
-
-    NSButton *aboutBtn = [self sidebarButton:@"info.circle.fill" title:@"About" y:cursor - 32 tag:SidebarSectionSettings + 2];
-    cursor -= 36;
-    [self.sidebarView addSubview:aboutBtn];
-
-    // Storage bar (pinned to bottom)
-    NSTextField *storeLbl = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 56, 130, 13)];
-    storeLbl.stringValue = @"Storage Used";
-    storeLbl.font = [NSFont systemFontOfSize:10 weight:NSFontWeightMedium];
-    storeLbl.textColor = [NSColor secondaryLabelColor];
-    storeLbl.editable = NO; storeLbl.bordered = NO;
-    storeLbl.backgroundColor = [NSColor clearColor];
-    storeLbl.autoresizingMask = NSViewMaxYMargin;
-    [self.sidebarView addSubview:storeLbl];
-
-    self.storageValueLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 43, sideW - 4, 13)];
-    self.storageValueLabel.font = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular];
-    self.storageValueLabel.textColor = [NSColor secondaryLabelColor];
-    self.storageValueLabel.editable = NO; self.storageValueLabel.bordered = NO;
-    self.storageValueLabel.backgroundColor = [NSColor clearColor];
-    self.storageValueLabel.autoresizingMask = NSViewMaxYMargin;
-    [self.sidebarView addSubview:self.storageValueLabel];
-    [self updateStorageLabel];
-
-    // Progress track
-    self.storageProgressTrack = [[NSView alloc] initWithFrame:NSMakeRect(12, 30, sideW - 8, 4)];
-    self.storageProgressTrack.wantsLayer = YES;
-    self.storageProgressTrack.layer.cornerRadius = 2.0;
-    self.storageProgressTrack.layer.backgroundColor = [[NSColor colorWithWhite:0.3 alpha:0.4] CGColor];
-    self.storageProgressTrack.autoresizingMask = NSViewMaxYMargin;
-    [self.sidebarView addSubview:self.storageProgressTrack];
-
-    self.storageProgressFill = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 30, 4)];
-    self.storageProgressFill.wantsLayer = YES;
-    self.storageProgressFill.layer.cornerRadius = 2.0;
-    self.storageProgressFill.layer.backgroundColor = [[NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0] CGColor];
-    [self.storageProgressTrack addSubview:self.storageProgressFill];
-
-    [self updateSidebarSelection];
-}
-
-// Sidebar helper — section label
-- (CGFloat)addSectionLabel:(NSString *)text y:(CGFloat)y {
-    NSTextField *lbl = [[NSTextField alloc] initWithFrame:NSMakeRect(12, y, kSidebarWidth - 16, 13)];
-    lbl.stringValue = text;
-    lbl.font = [NSFont systemFontOfSize:9.5 weight:NSFontWeightSemibold];
-    lbl.textColor = [NSColor tertiaryLabelColor];
-    lbl.editable = NO; lbl.bordered = NO;
-    lbl.backgroundColor = [NSColor clearColor];
-    lbl.autoresizingMask = NSViewMinYMargin;
-    [self.sidebarView addSubview:lbl];
-    return y;
-}
-
-// Sidebar helper — thin divider
-- (void)addSidebarDivider:(CGFloat)y {
-    NSView *div = [[NSView alloc] initWithFrame:NSMakeRect(12, y, kSidebarWidth - 24, 1)];
-    div.wantsLayer = YES;
-    div.layer.backgroundColor = [[NSColor separatorColor] CGColor];
-    div.autoresizingMask = NSViewMinYMargin;
-    [self.sidebarView addSubview:div];
-}
-
-// Sidebar helper — icon + text button
-- (NSButton *)sidebarButton:(NSString *)symbolName title:(NSString *)title y:(CGFloat)y tag:(NSInteger)tag {
-    NSButton *btn = [[NSButton alloc] initWithFrame:NSMakeRect(8, y, kSidebarWidth - 16, 30)];
-    btn.bezelStyle = NSBezelStyleRoundRect;
-    btn.bordered = NO;
-    btn.wantsLayer = YES;
-    btn.layer.cornerRadius = 7.0;
-    btn.alignment = NSTextAlignmentLeft;
-    btn.tag = tag;
-    btn.target = self;
-    btn.action = @selector(sidebarButtonClicked:);
-    btn.autoresizingMask = NSViewMinYMargin;
-
-    // Left-aligned paragraph style
-    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
-    para.alignment = NSTextAlignmentLeft;
-
-    // Attributed title: indent + icon + gap + text
-    NSMutableAttributedString *attrTitle = [[NSMutableAttributedString alloc] init];
-    [attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"  "]];
-    if (@available(macOS 11.0, *)) {
-        NSImage *icon = [NSImage imageWithSystemSymbolName:symbolName
-                                  accessibilityDescription:nil];
-        NSTextAttachment *att = [[NSTextAttachment alloc] init];
-        att.image = icon;
-        att.bounds = CGRectMake(0, -2, 14, 14);
-        NSAttributedString *iconStr = [NSAttributedString attributedStringWithAttachment:att];
-        [attrTitle appendAttributedString:iconStr];
-        [attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:@"  "]];
-    }
-    NSDictionary *attrs = @{
-        NSFontAttributeName:            [NSFont systemFontOfSize:13 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: [NSColor labelColor],
-        NSParagraphStyleAttributeName:  para
+    __weak typeof(self) weakSelf = self;
+    self.sidebar.onSectionSelected = ^(MacieSidebarSection section) {
+        [weakSelf sidebarSectionSelected:section];
     };
-    [attrTitle appendAttributedString:[[NSAttributedString alloc] initWithString:title attributes:attrs]];
-    [attrTitle addAttribute:NSParagraphStyleAttributeName value:para range:NSMakeRange(0, attrTitle.length)];
-    [btn setAttributedTitle:attrTitle];
-    return btn;
+
+    [cv addSubview:self.sidebar];
 }
 
-// Sidebar helper — right-side count badge
-- (NSTextField *)badgeLabel:(NSString *)text x:(CGFloat)x y:(CGFloat)y {
-    NSTextField *f = [[NSTextField alloc] initWithFrame:NSMakeRect(x, y, 36, 18)];
-    f.stringValue = text;
-    f.font = [NSFont systemFontOfSize:10 weight:NSFontWeightMedium];
-    f.textColor = [NSColor secondaryLabelColor];
-    f.alignment = NSTextAlignmentRight;
-    f.editable = NO; f.bordered = NO;
-    f.backgroundColor = [NSColor clearColor];
-    f.autoresizingMask = NSViewMinYMargin;
-    return f;
+- (void)sidebarSectionSelected:(MacieSidebarSection)section {
+    // Three rows are commands rather than filters; they never become the selection.
+    if (section == MacieSidebarSectionRandom)   { [self playRandomWallpaper:nil];       return; }
+    if (section == MacieSidebarSectionSettings) { [self showSettingsSheet:nil];         return; }
+    if (section == MacieSidebarSectionAbout)    { [NSApp orderFrontStandardAboutPanel:nil]; return; }
+
+    self.activeSection = section;
+
+    if (section >= MacieSidebarSectionCollection && section < MacieSidebarSectionSettings) {
+        NSUInteger idx = (NSUInteger)(section - MacieSidebarSectionCollection);
+        NSArray<NSString *> *names = MacieCollectionNames();
+        self.activeCollectionName = (idx < names.count) ? names[idx] : nil;
+        self.galleryHeaderLabel.stringValue = self.activeCollectionName ?: @"Collection";
+    } else {
+        self.activeCollectionName = nil;
+        if (section == MacieSidebarSectionFavorites)   self.galleryHeaderLabel.stringValue = @"Favorites";
+        else if (section == MacieSidebarSectionRecent) self.galleryHeaderLabel.stringValue = @"Recent";
+        else                                          self.galleryHeaderLabel.stringValue = @"All Wallpapers";
+    }
+
+    [self layoutGalleryHeader];
+    self.searchField.stringValue = @"";
+    [self.sidebar setSelectedSection:section];
+    [self applyCurrentFilter];
+}
+
+- (void)updateSidebarBadges {
+    [self.sidebar setLibraryCount:self.videos.count
+                  favoritesCount:self.favoriteIds.count
+                     recentCount:self.recentIds.count];
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +296,7 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     self.contentArea = [[NSView alloc] initWithFrame:NSMakeRect(kSidebarWidth, 0, cw, ch)];
     self.contentArea.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.contentArea.wantsLayer = YES;
-    self.contentArea.layer.backgroundColor = [[NSColor colorWithRed:0.067 green:0.071 blue:0.094 alpha:1.0] CGColor];
+    self.contentArea.layer.backgroundColor = MacieBackgroundColor().CGColor;
     [cv addSubview:self.contentArea];
 
     [self buildToolbar];
@@ -439,51 +314,46 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     NSView *toolbar = [[NSView alloc] initWithFrame:NSMakeRect(0, ch - kToolbarHeight, cw, kToolbarHeight)];
     toolbar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
     toolbar.wantsLayer = YES;
-    toolbar.layer.backgroundColor = [[NSColor colorWithRed:0.067 green:0.071 blue:0.094 alpha:0.95] CGColor];
+    toolbar.layer.backgroundColor = MacieBackgroundColor().CGColor;
 
-    // Bottom separator
-    NSView *sep = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, cw, 1)];
-    sep.autoresizingMask = NSViewWidthSizable;
-    sep.wantsLayer = YES;
-    sep.layer.backgroundColor = [[NSColor colorWithWhite:0.2 alpha:0.4] CGColor];
-    [toolbar addSubview:sep];
+    NSView *separator = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, cw, 1)];
+    separator.autoresizingMask = NSViewWidthSizable;
+    separator.wantsLayer = YES;
+    separator.layer.backgroundColor = MacieHairlineColor().CGColor;
+    [toolbar addSubview:separator];
 
-    // Search field
-    self.searchField = [[NSSearchField alloc] initWithFrame:NSMakeRect(16, 11, 340, 30)];
-    self.searchField.placeholderString = @"Search wallpapers...";
+    // The search field starts at the same left edge as the gallery header, the
+    // hero panel and the grid's first column.
+    self.searchField = [[NSSearchField alloc] initWithFrame:NSMakeRect(
+        kMacieContentInset, (kToolbarHeight - kMacieFieldHeight) / 2.0, 320, kMacieFieldHeight)];
+    self.searchField.placeholderString = @"Search titles, descriptions and tags";
+    self.searchField.font     = MacieFontBody();
     self.searchField.delegate = self;
     self.searchField.target   = self;
     self.searchField.action   = @selector(searchFieldChanged:);
     self.searchField.sendsSearchStringImmediately = YES;
-    self.searchField.wantsLayer = YES;
-    self.searchField.layer.cornerRadius = 8.0;
+    self.searchField.toolTip = @"Search wallpapers (⌘F)";
     [toolbar addSubview:self.searchField];
 
-    // Right-side icon buttons
-    CGFloat bx = cw - 16;
-    NSArray<NSString *> *symbols = @[@"rectangle.grid.2x2", @"gearshape", @"speaker.wave.2", @"shuffle"];
-    SEL actions[4] = {
-        @selector(noop:),
-        @selector(showSettingsSheet:),
-        @selector(toolbarToggleMute:),
-        @selector(toolbarShuffle:)
-    };
-    for (NSInteger i = 0; i < 4; i++) {
-        NSButton *btn = [NSButton buttonWithImage:[NSImage new] target:self action:NULL];
-        if (@available(macOS 11.0, *)) {
-            NSImage *img = [NSImage imageWithSystemSymbolName:symbols[i] accessibilityDescription:nil];
-            [btn setImage:img];
-        }
-        if (i == 2) self.muteToolbarButton = btn;
-        if (i == 3) self.shuffleButton = btn;
-        btn.bordered = NO;
-        btn.wantsLayer = YES;
-        btn.layer.cornerRadius = 6.0;
-        btn.contentTintColor = [NSColor secondaryLabelColor];
-        btn.frame = NSMakeRect(bx - 32, 11, 28, 28);
-        bx -= 36;
-        btn.target = self;
-        btn.action = actions[i];
+    // Trailing icon buttons. NSViewMinXMargin pins them to the right edge; without
+    // it they keep their launch-width x and drift inward as the window widens.
+    NSArray<NSString *> *symbols  = @[@"gearshape", @"speaker.wave.2", @"shuffle"];
+    NSArray<NSString *> *tooltips = @[@"Settings (⌘,)",
+                                      @"Mute / unmute wallpaper audio (⇧⌘M)",
+                                      @"Play a random wallpaper (⌘R)"];
+    SEL actions[3] = { @selector(showSettingsSheet:),
+                       @selector(toolbarToggleMute:),
+                       @selector(toolbarShuffle:) };
+
+    CGFloat buttonY = (kToolbarHeight - kMacieControlHeight) / 2.0;
+    for (NSUInteger i = 0; i < symbols.count; i++) {
+        NSButton *btn = MacieIconButton(symbols[i], tooltips[i], self, actions[i]);
+        CGFloat x = cw - kMacieContentInset
+                  - (CGFloat)(i + 1) * kMacieControlHeight
+                  - (CGFloat)i * kMacieSpaceS;
+        btn.frame = NSMakeRect(x, buttonY, kMacieControlHeight, kMacieControlHeight);
+        btn.autoresizingMask = NSViewMinXMargin;
+        if (i == 1) self.muteToolbarButton = btn;
         [toolbar addSubview:btn];
     }
 
@@ -498,234 +368,40 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
     CGFloat ch = self.contentArea.bounds.size.height;
     CGFloat heroY = ch - kToolbarHeight - kHeroHeight;
 
-    self.heroContainer = [[NSView alloc] initWithFrame:NSMakeRect(0, heroY, cw, kHeroHeight)];
-    self.heroContainer.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    self.heroContainer.wantsLayer = YES;
-    self.heroContainer.layer.backgroundColor = [[NSColor blackColor] CGColor];
-    [self.contentArea addSubview:self.heroContainer];
+    self.heroPanel = [[HeroPanelView alloc] initWithFrame:NSMakeRect(0, heroY, cw, kHeroHeight)];
+    self.heroPanel.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
 
-    // Thumbnail fills entire hero
-    self.heroThumbnailView = [[NSImageView alloc] initWithFrame:self.heroContainer.bounds];
-    self.heroThumbnailView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    self.heroThumbnailView.imageScaling = NSImageScaleProportionallyUpOrDown;
-    self.heroThumbnailView.wantsLayer = YES;
-    self.heroThumbnailView.layer.masksToBounds = YES;
-    [self.heroContainer addSubview:self.heroThumbnailView];
+    __weak typeof(self) weakSelf = self;
+    self.heroPanel.onApplyRequested = ^(NSDictionary *video) {
+        [weakSelf applyWallpaper:video];
+    };
+    self.heroPanel.onFavoriteToggled = ^(NSDictionary *video) {
+        typeof(self) strongSelf = weakSelf;
+        NSString *wallpaperId = video[@"id"];
+        if (!strongSelf || !wallpaperId.length) return;
+        [strongSelf setFavorite:![strongSelf.favoriteIds containsObject:wallpaperId]
+                 forWallpaperId:wallpaperId];
+    };
 
-    // Dedicated view to host AVPlayerLayer — AppKit won't wipe sublayers on a plain NSView
-    self.heroPreviewView = [[NSView alloc] initWithFrame:self.heroContainer.bounds];
-    self.heroPreviewView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    self.heroPreviewView.wantsLayer = YES;
-    self.heroPreviewView.alphaValue = 0.0; // hidden until video is ready
-    [self.heroContainer addSubview:self.heroPreviewView];
-
-    // Dark gradient overlay across bottom third
-    CAGradientLayer *gradient = [CAGradientLayer layer];
-    gradient.frame = CGRectMake(0, 0, cw, kHeroHeight);
-    gradient.colors = @[
-        (__bridge id)[NSColor colorWithWhite:0.0 alpha:0.0].CGColor,
-        (__bridge id)[NSColor colorWithWhite:0.0 alpha:0.75].CGColor
-    ];
-    gradient.startPoint = CGPointMake(0, 0.6);
-    gradient.endPoint   = CGPointMake(0, 0.0);
-    [self.heroContainer.layer addSublayer:gradient];
-
-    // Frosted info panel bottom-left
-    self.heroInfoPanel = [[NSVisualEffectView alloc]
-        initWithFrame:NSMakeRect(20, 14, 380, 160)];
-    ((NSVisualEffectView *)self.heroInfoPanel).material = NSVisualEffectMaterialHUDWindow;
-    ((NSVisualEffectView *)self.heroInfoPanel).blendingMode = NSVisualEffectBlendingModeWithinWindow;
-    ((NSVisualEffectView *)self.heroInfoPanel).state = NSVisualEffectStateActive;
-    self.heroInfoPanel.wantsLayer = YES;
-    self.heroInfoPanel.layer.cornerRadius = 14.0;
-    self.heroInfoPanel.layer.masksToBounds = YES;
-    [self.heroContainer addSubview:self.heroInfoPanel];
-
-    // PLAYING indicator row
-    NSView *playingRow = [[NSView alloc] initWithFrame:NSMakeRect(14, 130, 200, 16)];
-    NSView *playDot = [[NSView alloc] initWithFrame:NSMakeRect(0, 4, 8, 8)];
-    playDot.wantsLayer = YES;
-    playDot.layer.cornerRadius = 4.0;
-    playDot.layer.backgroundColor = [[NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0] CGColor];
-    [playingRow addSubview:playDot];
-    NSTextField *playingText = [[NSTextField alloc] initWithFrame:NSMakeRect(14, 0, 120, 16)];
-    playingText.stringValue = @"PLAYING";
-    playingText.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
-    playingText.textColor = [NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0];
-    playingText.editable = NO; playingText.bordered = NO;
-    playingText.backgroundColor = [NSColor clearColor];
-    [playingRow addSubview:playingText];
-    [self.heroInfoPanel addSubview:playingRow];
-
-    // Title
-    self.heroTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(14, 95, 350, 32)];
-    self.heroTitleLabel.font = [NSFont systemFontOfSize:24 weight:NSFontWeightBold];
-    self.heroTitleLabel.textColor = [NSColor whiteColor];
-    self.heroTitleLabel.editable = NO; self.heroTitleLabel.bordered = NO;
-    self.heroTitleLabel.backgroundColor = [NSColor clearColor];
-    self.heroTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self.heroInfoPanel addSubview:self.heroTitleLabel];
-
-    // Meta (resolution • duration • size)
-    self.heroMetaLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(14, 78, 350, 16)];
-    self.heroMetaLabel.font = [NSFont systemFontOfSize:11];
-    self.heroMetaLabel.textColor = [NSColor colorWithWhite:0.65 alpha:1.0];
-    self.heroMetaLabel.editable = NO; self.heroMetaLabel.bordered = NO;
-    self.heroMetaLabel.backgroundColor = [NSColor clearColor];
-    [self.heroInfoPanel addSubview:self.heroMetaLabel];
-
-    // Description
-    self.heroDescLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(14, 48, 350, 28)];
-    self.heroDescLabel.font = [NSFont systemFontOfSize:11];
-    self.heroDescLabel.textColor = [NSColor colorWithWhite:0.55 alpha:1.0];
-    self.heroDescLabel.editable = NO; self.heroDescLabel.bordered = NO;
-    self.heroDescLabel.backgroundColor = [NSColor clearColor];
-    self.heroDescLabel.lineBreakMode = NSLineBreakByWordWrapping;
-    [self.heroInfoPanel addSubview:self.heroDescLabel];
-
-    // Action buttons row
-    CGFloat btnY = 12;
-    // Apply button (blue)
-    NSButton *applyBtn = [[NSButton alloc] initWithFrame:NSMakeRect(14, btnY, 80, 28)];
-    applyBtn.title = @"Apply";
-    applyBtn.bezelStyle = NSBezelStyleRounded;
-    applyBtn.wantsLayer = YES;
-    applyBtn.layer.cornerRadius = 7.0;
-    applyBtn.layer.backgroundColor = [[NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0] CGColor];
-    applyBtn.contentTintColor = [NSColor whiteColor];
-    applyBtn.target = self; applyBtn.action = @selector(applyHeroWallpaper:);
-    [self.heroInfoPanel addSubview:applyBtn];
-
-    // Favorite
-    self.heroFavoriteButton = [[NSButton alloc] initWithFrame:NSMakeRect(102, btnY, 28, 28)];
-    self.heroFavoriteButton.bordered = NO;
-    self.heroFavoriteButton.bezelStyle = NSBezelStyleInline;
-    self.heroFavoriteButton.target = self;
-    self.heroFavoriteButton.action = @selector(heroFavoriteClicked:);
-    [self updateHeroFavoriteButton];
-    [self.heroInfoPanel addSubview:self.heroFavoriteButton];
-
-    // Info
-    NSButton *infoBtn = [[NSButton alloc] initWithFrame:NSMakeRect(136, btnY, 28, 28)];
-    infoBtn.bordered = NO;
-    if (@available(macOS 11.0, *)) {
-        [infoBtn setImage:[NSImage imageWithSystemSymbolName:@"info.circle" accessibilityDescription:nil]];
-    }
-    infoBtn.contentTintColor = [NSColor secondaryLabelColor];
-    infoBtn.target = self; infoBtn.action = @selector(noop:);
-    [self.heroInfoPanel addSubview:infoBtn];
-
-    // Random
-    NSButton *randomBtn = [[NSButton alloc] initWithFrame:NSMakeRect(170, btnY, 90, 28)];
-    randomBtn.title = @" Random";
-    randomBtn.bezelStyle = NSBezelStyleRounded;
-    randomBtn.wantsLayer = YES;
-    randomBtn.layer.cornerRadius = 7.0;
-    randomBtn.layer.backgroundColor = [[NSColor colorWithWhite:0.25 alpha:0.6] CGColor];
-    randomBtn.contentTintColor = [NSColor whiteColor];
-    randomBtn.target = self; randomBtn.action = @selector(playRandomWallpaper:);
-    [self.heroInfoPanel addSubview:randomBtn];
-
-    // Mouse tracking for hover video preview
-    [self resetHeroTrackingArea];
+    [self.contentArea addSubview:self.heroPanel];
 }
 
-- (void)resetHeroTrackingArea {
-    if (self.heroTrackingArea) {
-        [self.heroContainer removeTrackingArea:self.heroTrackingArea];
-    }
-    self.heroTrackingArea = [[NSTrackingArea alloc]
-        initWithRect:self.heroContainer.bounds
-             options:(NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow)
-               owner:self
-            userInfo:nil];
-    [self.heroContainer addTrackingArea:self.heroTrackingArea];
+/// Points the hero at a wallpaper, working out for itself whether that is the
+/// playing one or a preview. Every hero update goes through here so the panel's
+/// PLAYING/PREVIEW state cannot drift from what is actually on the desktop.
+- (void)showInHero:(NSDictionary *)video {
+    if (!video) { [self.heroPanel showEmpty]; return; }
+
+    NSString *wallpaperId = video[@"id"];
+    [self.heroPanel showWallpaper:video
+                        isPreview:![wallpaperId isEqualToString:self.playingWallpaperId]
+                       isFavorite:[self.favoriteIds containsObject:wallpaperId]];
 }
 
-// Hero hover — play video preview on mouse enter
-- (void)mouseEntered:(NSEvent *)event {
-    if (event.trackingArea != self.heroTrackingArea) return;
-    [self startHeroVideoPreview];
-}
-
-- (void)mouseExited:(NSEvent *)event {
-    if (event.trackingArea != self.heroTrackingArea) return;
-    [self stopHeroVideoPreview];
-}
-
-- (void)startHeroVideoPreview {
-    NSString *wid = self.playingWallpaperId;
-    if (!wid) return;
-    NSPredicate *p = [NSPredicate predicateWithFormat:@"id == %@", wid];
-    NSDictionary *vid = [[self.videos filteredArrayUsingPredicate:p] firstObject];
-    if (!vid) return;
-
-    NSURL *url = [NSURL fileURLWithPath:vid[@"path"]];
-    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
-    AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
-    player.muted = YES;
-    self.heroPreviewPlayer = player;
-
-    // Always create a fresh layer on the dedicated preview view
-    if (self.heroPreviewLayer) {
-        [self.heroPreviewLayer removeFromSuperlayer];
-    }
-    self.heroPreviewLayer = [AVPlayerLayer playerLayerWithPlayer:player];
-    self.heroPreviewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-    self.heroPreviewLayer.frame = self.heroPreviewView.bounds;
-    [self.heroPreviewView.layer addSublayer:self.heroPreviewLayer];
-
-    // Thumbnail stays fully visible; wait for video to have frames before cross-fading
-    self.heroThumbnailView.alphaValue = 1.0;
-    self.heroPreviewView.alphaValue   = 0.0;
-
-    [player play];
-
-    // KVO: fade in preview and fade out thumbnail only once video has actual frames
-    [self.heroPreviewLayer addObserver:self
-                            forKeyPath:@"readyForDisplay"
-                               options:NSKeyValueObservingOptionNew
-                               context:NULL];
-}
-
-- (void)observeValueForKeyPath:(NSString *)kp ofObject:(id)obj
-                        change:(NSDictionary *)change context:(void *)ctx {
-    if ([kp isEqualToString:@"readyForDisplay"] && [change[NSKeyValueChangeNewKey] boolValue]) {
-        // Remove observer before dispatch to avoid double-fire
-        @try { [self.heroPreviewLayer removeObserver:self forKeyPath:@"readyForDisplay"]; } @catch (...) {}
-
-        // Safety: bail if user already moused out
-        AVPlayer *capturedPlayer = self.heroPreviewPlayer;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!capturedPlayer || capturedPlayer != self.heroPreviewPlayer) return;
-            self.heroPreviewLayer.frame = self.heroPreviewView.bounds;
-            [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-                ctx.duration = 0.25;
-                self.heroPreviewView.animator.alphaValue   = 1.0;
-                self.heroThumbnailView.animator.alphaValue = 0.0;
-            } completionHandler:nil];
-        });
-    }
-}
-
-- (void)stopHeroVideoPreview {
-    // Remove KVO observer first
-    @try { [self.heroPreviewLayer removeObserver:self forKeyPath:@"readyForDisplay"]; } @catch (...) {}
-
-    // Nil the player immediately — any queued observeValue block will bail on the nil check
-    self.heroPreviewPlayer = nil;
-
-    [self.heroPreviewPlayer pause]; // no-op since already nil, kept for clarity
-
-    // Restore thumbnail instantly, fade out preview
-    self.heroThumbnailView.alphaValue = 1.0;
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-        ctx.duration = 0.2;
-        self.heroPreviewView.animator.alphaValue = 0.0;
-    } completionHandler:^{
-        [self.heroPreviewLayer removeFromSuperlayer];
-        self.heroPreviewLayer = nil;
-    }];
+/// Returns the hero to the wallpaper that is actually playing. Escape does this.
+- (void)cancelHeroPreview {
+    if (!self.heroPanel.isPreview) return;
+    [self showInHero:[self videoForId:self.playingWallpaperId]];
 }
 
 // ---------------------------------------------------------------------------
@@ -734,55 +410,173 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 - (void)buildGallery {
     CGFloat cw = self.contentArea.bounds.size.width;
     CGFloat ch = self.contentArea.bounds.size.height;
-    CGFloat galleryTop = ch - kToolbarHeight - kHeroHeight - kGalleryHeaderHeight;
-    CGFloat galleryH   = galleryTop - kMiniPlayerHeight;
+    CGFloat headerY  = ch - kToolbarHeight - kHeroHeight - kGalleryHeaderHeight;
+    CGFloat galleryH = headerY;   // the grid fills everything below the header
 
-    // Gallery header bar
-    NSView *hdr = [[NSView alloc] initWithFrame:NSMakeRect(0, galleryTop, cw, kGalleryHeaderHeight)];
-    hdr.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    hdr.wantsLayer = YES;
-    hdr.layer.backgroundColor = [[NSColor colorWithRed:0.075 green:0.079 blue:0.102 alpha:1.0] CGColor];
-    [self.contentArea addSubview:hdr];
+    // --- Header --------------------------------------------------------------
+    NSView *header = [[NSView alloc] initWithFrame:NSMakeRect(0, headerY, cw, kGalleryHeaderHeight)];
+    header.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    header.wantsLayer = YES;
+    header.layer.backgroundColor = MacieSurfaceColor().CGColor;
+    [self.contentArea addSubview:header];
 
-    self.galleryHeaderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 12, 220, 20)];
-    self.galleryHeaderLabel.stringValue = @"All Wallpapers";
-    self.galleryHeaderLabel.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
-    self.galleryHeaderLabel.textColor = [NSColor labelColor];
-    self.galleryHeaderLabel.editable = NO; self.galleryHeaderLabel.bordered = NO;
-    self.galleryHeaderLabel.backgroundColor = [NSColor clearColor];
-    [hdr addSubview:self.galleryHeaderLabel];
+    CGFloat titleH   = ceil(MacieFontBodyEmphasized().boundingRectForFont.size.height);
+    CGFloat captionH = ceil(MacieFontCaption().boundingRectForFont.size.height);
 
-    self.countLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(250, 14, 120, 16)];
-    self.countLabel.stringValue = @"";
-    self.countLabel.font = [NSFont systemFontOfSize:11];
-    self.countLabel.textColor = [NSColor secondaryLabelColor];
-    self.countLabel.editable = NO; self.countLabel.bordered = NO;
-    self.countLabel.backgroundColor = [NSColor clearColor];
-    [hdr addSubview:self.countLabel];
+    self.galleryHeaderLabel = MacieLabel(@"All Wallpapers", MacieFontBodyEmphasized(),
+                                         MaciePrimaryTextColor());
+    self.galleryHeaderLabel.frame = NSMakeRect(kMacieContentInset,
+                                               (kGalleryHeaderHeight - titleH) / 2.0,
+                                               200, titleH);
+    [header addSubview:self.galleryHeaderLabel];
 
-    // Collection view
+    self.countLabel = MacieLabel(@"", MacieFontCaption(), MacieTertiaryTextColor());
+    self.countLabel.frame = NSMakeRect(kMacieContentInset,
+                                       (kGalleryHeaderHeight - captionH) / 2.0,
+                                       220, captionH);
+    [header addSubview:self.countLabel];
+
+    self.sortPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(
+        cw - kMacieContentInset - kSortControlWidth,
+        (kGalleryHeaderHeight - kMacieControlHeight) / 2.0,
+        kSortControlWidth, kMacieControlHeight) pullsDown:NO];
+    [self.sortPopup addItemsWithTitles:MacieSortTitles()];
+    [self.sortPopup selectItemAtIndex:self.sortOrder];
+    self.sortPopup.font   = MacieFontBody();
+    self.sortPopup.target = self;
+    self.sortPopup.action = @selector(sortOrderChanged:);
+    self.sortPopup.autoresizingMask = NSViewMinXMargin;
+    [header addSubview:self.sortPopup];
+
+    [self layoutGalleryHeader];
+    [self updateSortControlEnabled];
+
+    // --- Grid ----------------------------------------------------------------
     NSCollectionViewFlowLayout *layout = [[NSCollectionViewFlowLayout alloc] init];
-    layout.itemSize = NSMakeSize(195, 160);
-    layout.minimumInteritemSpacing = 16;
-    layout.minimumLineSpacing      = 16;
-    layout.sectionInset = NSEdgeInsetsMake(16, 20, 16, 20);
+    // The item size comes from the card itself, so the two cannot disagree.
+    layout.itemSize = NSMakeSize(kMacieCardWidth, kMacieCardHeight);
+    layout.minimumInteritemSpacing = kMacieSpaceL;
+    layout.minimumLineSpacing      = kMacieSpaceL;
+    layout.sectionInset = NSEdgeInsetsMake(kMacieSpaceL, kMacieContentInset,
+                                           kMacieSpaceXXL, kMacieContentInset);
     layout.scrollDirection = NSCollectionViewScrollDirectionVertical;
 
-    self.collectionView = [[NSCollectionView alloc] initWithFrame:NSMakeRect(0, 0, cw, galleryH)];
+    self.collectionView = [[MacieGalleryView alloc] initWithFrame:NSMakeRect(0, 0, cw, galleryH)];
     self.collectionView.collectionViewLayout = layout;
     self.collectionView.delegate   = self;
     self.collectionView.dataSource = self;
-    self.collectionView.backgroundColors = @[[NSColor colorWithRed:0.067 green:0.071 blue:0.094 alpha:1.0]];
+    self.collectionView.backgroundColors = @[MacieBackgroundColor()];
     self.collectionView.selectable = YES;
     [self.collectionView registerClass:[VideoCollectionItem class] forItemWithIdentifier:@"VideoItem"];
 
+    __weak typeof(self) weakSelf = self;
+    self.collectionView.onKey = ^BOOL(MacieGalleryKey key) {
+        return [weakSelf handleGalleryKey:key];
+    };
+    self.collectionView.onContextMenuForItem = ^NSMenu *(NSInteger itemIndex) {
+        return [weakSelf contextMenuForItemIndex:itemIndex];
+    };
+
     self.scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, cw, galleryH)];
     self.scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    self.scrollView.documentView  = self.collectionView;
+    self.scrollView.documentView = self.collectionView;
     self.scrollView.hasVerticalScroller   = YES;
     self.scrollView.hasHorizontalScroller = NO;
     self.scrollView.drawsBackground = NO;
     [self.contentArea addSubview:self.scrollView];
+
+    // --- Empty state ---------------------------------------------------------
+    // A sibling on top of the scroll view rather than a subview of the document,
+    // so it stays put instead of scrolling.
+    self.emptyState = [[GalleryEmptyStateView alloc] initWithFrame:NSMakeRect(0, 0, cw, galleryH)];
+    self.emptyState.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.emptyState.hidden = YES;
+    [self.contentArea addSubview:self.emptyState];
+}
+
+/// Places the count immediately after the header title's measured width. The count
+/// used to sit at a hardcoded x=250, which long collection names ran straight into.
+- (void)layoutGalleryHeader {
+    NSString *title = self.galleryHeaderLabel.stringValue ?: @"";
+    CGFloat titleW = ceil([title sizeWithAttributes:
+                           @{NSFontAttributeName: self.galleryHeaderLabel.font}].width) + 2;
+
+    NSRect titleFrame = self.galleryHeaderLabel.frame;
+    self.galleryHeaderLabel.frame = NSMakeRect(kMacieContentInset, titleFrame.origin.y,
+                                               titleW, titleFrame.size.height);
+
+    NSRect countFrame = self.countLabel.frame;
+    self.countLabel.frame = NSMakeRect(kMacieContentInset + titleW + kMacieSpaceM,
+                                       countFrame.origin.y, 220, countFrame.size.height);
+}
+
+- (void)updateCountLabel {
+    NSUInteger shown = self.filteredVideos.count;
+    NSUInteger total = self.videos.count;
+
+    if (shown == total) {
+        self.countLabel.stringValue = (total == 1)
+            ? @"1 wallpaper"
+            : [NSString stringWithFormat:@"%lu wallpapers", (unsigned long)total];
+    } else {
+        self.countLabel.stringValue = [NSString stringWithFormat:@"%lu of %lu",
+                                       (unsigned long)shown, (unsigned long)total];
+    }
+}
+
+/// Recent is ordered by when each wallpaper was last applied. Sorting it any other
+/// way would destroy the only thing the section means, so the control is disabled
+/// there rather than silently ignored.
+- (void)updateSortControlEnabled {
+    BOOL isRecent = (self.activeSection == MacieSidebarSectionRecent);
+    self.sortPopup.enabled = !isRecent;
+    self.sortPopup.toolTip = isRecent
+        ? @"Recent is always ordered by when you last applied a wallpaper"
+        : @"Sort the gallery";
+}
+
+/// An empty grid used to render as a blank void, which is indistinguishable from a
+/// bug. Every way of emptying it now says which one happened and what to do.
+- (void)updateEmptyState {
+    if (self.filteredVideos.count > 0) {
+        self.emptyState.hidden = YES;
+        return;
+    }
+
+    NSString *query = [self.searchField.stringValue
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if (query.length > 0) {
+        [self.emptyState showSymbol:@"magnifyingglass"
+                              title:[NSString stringWithFormat:@"No matches for “%@”", query]
+                           subtitle:@"Search covers titles, descriptions and Workshop tags. "
+                                     "Try a shorter term, or clear the field to see everything again."];
+        return;
+    }
+
+    switch (self.activeSection) {
+        case MacieSidebarSectionFavorites:
+            [self.emptyState showSymbol:@"heart"
+                                  title:@"No favorites yet"
+                               subtitle:@"Click the heart on any wallpaper — here or in the panel above — to keep it in this list."];
+            break;
+        case MacieSidebarSectionRecent:
+            [self.emptyState showSymbol:@"clock"
+                                  title:@"Nothing played yet"
+                               subtitle:@"The last 20 wallpapers you apply will collect here, most recent first."];
+            break;
+        default:
+            if (self.activeCollectionName) {
+                [self.emptyState showSymbol:@"folder"
+                                      title:[NSString stringWithFormat:@"Nothing in %@", self.activeCollectionName]
+                                   subtitle:@"Collections match on a wallpaper's title and its Workshop tags, so an item with neither will only appear in Library."];
+            } else {
+                [self.emptyState showSymbol:@"photo.on.rectangle.angled"
+                                      title:@"No wallpapers found"
+                                   subtitle:@"Point the app at the steamapps folder that contains workshop/content/431960 — use Change Steam Folder in Settings."];
+            }
+            break;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -791,290 +585,502 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 - (void)loadVideos {
     std::vector<Macie::WallpaperProject> wallpapers = [self.assetManager getVideoWallpapers];
 
-    NSMutableArray *arr = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *loaded = [NSMutableArray arrayWithCapacity:wallpapers.size()];
     for (const auto &w : wallpapers) {
-        [arr addObject:@{
-            @"id":    [NSString stringWithUTF8String:w.id.c_str()],
-            @"title": [NSString stringWithUTF8String:w.title.c_str()],
-            @"path":  [NSString stringWithUTF8String:w.videoFilePath.c_str()]
+        // stringWithUTF8String: returns nil on malformed bytes, and a nil value in
+        // a dictionary literal is fatal — so each one is defaulted.
+        NSString *wallpaperId = [NSString stringWithUTF8String:w.id.c_str()]            ?: @"";
+        NSString *title       = [NSString stringWithUTF8String:w.title.c_str()]         ?: @"";
+        NSString *path        = [NSString stringWithUTF8String:w.videoFilePath.c_str()] ?: @"";
+        NSString *preview     = [NSString stringWithUTF8String:w.previewPath.c_str()]   ?: @"";
+        NSString *description = [NSString stringWithUTF8String:w.description.c_str()]   ?: @"";
+
+        NSMutableArray<NSString *> *tags = [NSMutableArray arrayWithCapacity:w.tags.size()];
+        for (const auto &t : w.tags) {
+            NSString *tag = [NSString stringWithUTF8String:t.c_str()];
+            if (tag.length) [tags addObject:tag];
+        }
+        NSString *tagText = [tags componentsJoinedByString:@" "];
+
+        // Search runs on every keystroke and collection matching on every section
+        // change, so both haystacks are lowercased once here instead of per pass.
+        //
+        // categoryText excludes the description on purpose: matching prose would
+        // file everything whose blurb mentions "city" under Cyberpunk.
+        [loaded addObject:@{
+            @"id":           wallpaperId,
+            @"title":        title,
+            @"path":         path,
+            @"preview":      preview,
+            @"description":  description,
+            @"tags":         [tags copy],
+            @"searchText":   [[NSString stringWithFormat:@"%@ %@ %@", title, description, tagText] lowercaseString],
+            @"categoryText": [[NSString stringWithFormat:@"%@ %@", title, tagText] lowercaseString]
         }];
     }
 
-    self.videos = [arr copy];
-    self.filteredVideos = self.videos;
-    self.activeSidebarSection = SidebarSectionLibrary;
-    [self.searchField setStringValue:@""];
-    [self.collectionView reloadData];
+    self.videos    = [loaded copy];
+    self.fileStats = @{};
 
-    // Determine the currently playing wallpaper ID
-    NSString *savedId = [[NSUserDefaults standardUserDefaults] stringForKey:kDefaultsLastWallpaperId];
-    self.playingWallpaperId = savedId;
+    self.activeSection        = MacieSidebarSectionLibrary;
+    self.activeCollectionName = nil;
+    self.galleryHeaderLabel.stringValue = @"All Wallpapers";
+    [self layoutGalleryHeader];
+    self.searchField.stringValue = @"";
+    [self.sidebar setSelectedSection:MacieSidebarSectionLibrary];
 
-    [self updateCountLabel];
+    self.playingWallpaperId = [[NSUserDefaults standardUserDefaults]
+        stringForKey:kDefaultsLastWallpaperId];
+
+    [self applyCurrentFilter];
     [self updateSidebarBadges];
-    [self updateHeroForCurrentWallpaper];
+    [self updateStorageLabels];
+    [self showInHero:[self videoForId:self.playingWallpaperId]];
     [self updateMuteButton];
+}
+
+- (NSDictionary *)videoForId:(NSString *)wallpaperId {
+    if (!wallpaperId.length) return nil;
+    for (NSDictionary *video in self.videos) {
+        if ([video[@"id"] isEqualToString:wallpaperId]) return video;
+    }
+    return nil;
+}
+
+- (NSUInteger)indexOfWallpaperId:(NSString *)wallpaperId
+                         inArray:(NSArray<NSDictionary *> *)array {
+    if (!wallpaperId.length) return NSNotFound;
+    for (NSUInteger i = 0; i < array.count; i++) {
+        if ([array[i][@"id"] isEqualToString:wallpaperId]) return i;
+    }
+    return NSNotFound;
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Filtering, Search and Sort
+
+/// The one place the visible list is computed: section, then search, then sort.
+/// Everything that changes what should be on screen calls this.
+- (void)applyCurrentFilter {
+    NSArray<NSDictionary *> *source = [self sourceArrayForActiveSection];
+
+    NSString *query = [[self.searchField.stringValue
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+        lowercaseString];
+
+    if (query.length > 0) {
+        NSMutableArray<NSDictionary *> *matches = [NSMutableArray array];
+        for (NSDictionary *video in source) {
+            if ([video[@"searchText"] containsString:query]) [matches addObject:video];
+        }
+        source = matches;
+    }
+
+    self.filteredVideos = [self sortedVideos:source];
+
+    [self.collectionView reloadData];
+    [self updateCountLabel];
+    [self updateSortControlEnabled];
+    [self updateEmptyState];
+}
+
+/// The subset of self.videos that the active sidebar section describes.
+- (NSArray<NSDictionary *> *)sourceArrayForActiveSection {
+    switch (self.activeSection) {
+        case MacieSidebarSectionFavorites:
+            return [self.videos filteredArrayUsingPredicate:
+                [NSPredicate predicateWithFormat:@"id IN %@", self.favoriteIds]];
+
+        case MacieSidebarSectionRecent: {
+            NSMutableArray<NSDictionary *> *ordered = [NSMutableArray array];
+            for (NSString *recentId in self.recentIds) {
+                NSDictionary *video = [self videoForId:recentId];
+                if (video) [ordered addObject:video];
+            }
+            return [ordered copy];
+        }
+
+        default: {
+            if (!self.activeCollectionName) return self.videos;
+
+            NSArray<NSString *> *keywords = MacieCollectionKeywords()[self.activeCollectionName];
+            NSMutableArray<NSDictionary *> *matches = [NSMutableArray array];
+            for (NSDictionary *video in self.videos) {
+                NSString *haystack = video[@"categoryText"];
+                for (NSString *keyword in keywords) {
+                    if ([haystack containsString:keyword]) { [matches addObject:video]; break; }
+                }
+            }
+            return [matches copy];
+        }
+    }
+}
+
+- (NSArray<NSDictionary *> *)sortedVideos:(NSArray<NSDictionary *> *)input {
+    if (self.activeSection == MacieSidebarSectionRecent) return input;
+
+    NSDictionary<NSString *, NSDictionary *> *stats = self.fileStats;
+
+    switch (self.sortOrder) {
+        case MacieGallerySortTitleDescending:
+            return [input sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                return [b[@"title"] localizedStandardCompare:a[@"title"]];
+            }];
+
+        case MacieGallerySortNewestFirst:
+            // The background pass has not landed yet — leave the order alone rather
+            // than sorting everything to a tie.
+            if (stats.count == 0) return input;
+            return [input sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                double da = [stats[a[@"id"]][@"date"] doubleValue];
+                double db = [stats[b[@"id"]][@"date"] doubleValue];
+                if (da == db) return [a[@"title"] localizedStandardCompare:b[@"title"]];
+                return (da > db) ? NSOrderedAscending : NSOrderedDescending;
+            }];
+
+        case MacieGallerySortLargestFirst:
+            if (stats.count == 0) return input;
+            return [input sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                long long sa = [stats[a[@"id"]][@"size"] longLongValue];
+                long long sb = [stats[b[@"id"]][@"size"] longLongValue];
+                if (sa == sb) return [a[@"title"] localizedStandardCompare:b[@"title"]];
+                return (sa > sb) ? NSOrderedAscending : NSOrderedDescending;
+            }];
+
+        case MacieGallerySortTitleAscending:
+        default:
+            return [input sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                return [a[@"title"] localizedStandardCompare:b[@"title"]];
+            }];
+    }
+}
+
+- (void)sortOrderChanged:(NSPopUpButton *)sender {
+    self.sortOrder = (MacieGallerySort)sender.indexOfSelectedItem;
+    [[NSUserDefaults standardUserDefaults] setInteger:self.sortOrder
+                                              forKey:kDefaultsGallerySortOrder];
+    [self applyCurrentFilter];
+}
+
+- (void)searchFieldChanged:(id)sender {
+    [self applyCurrentFilter];
+}
+
+- (void)controlTextDidChange:(NSNotification *)notification {
+    if (notification.object == self.searchField) [self applyCurrentFilter];
+}
+
+/// Escape clears the search and hands focus back to the grid; Return and Down move
+/// into the results. Without these the search field is a place the keyboard gets
+/// stuck.
+- (BOOL)control:(NSControl *)control
+       textView:(NSTextView *)textView
+doCommandBySelector:(SEL)command {
+    if (control != self.searchField) return NO;
+
+    if (command == @selector(cancelOperation:)) {
+        self.searchField.stringValue = @"";
+        [self applyCurrentFilter];
+        [self.window makeFirstResponder:self.collectionView];
+        return YES;
+    }
+    if (command == @selector(insertNewline:) || command == @selector(moveDown:)) {
+        [self.window makeFirstResponder:self.collectionView];
+        [self focusGalleryItemAtIndex:0 scrollPosition:NSCollectionViewScrollPositionTop];
+        return YES;
+    }
+    return NO;
+}
+
+/// ⌘F, routed from the Edit menu through the responder chain.
+- (void)focusSearchField:(id)sender {
+    [self.window makeFirstResponder:self.searchField];
 }
 
 // ---------------------------------------------------------------------------
 #pragma mark - NSCollectionViewDataSource
 
 - (NSInteger)collectionView:(NSCollectionView *)cv numberOfItemsInSection:(NSInteger)section {
-    return self.filteredVideos.count;
+    return (NSInteger)self.filteredVideos.count;
 }
 
 - (NSCollectionViewItem *)collectionView:(NSCollectionView *)cv
-         itemForRepresentedObjectAtIndexPath:(NSIndexPath *)indexPath {
+     itemForRepresentedObjectAtIndexPath:(NSIndexPath *)indexPath {
     VideoCollectionItem *item = [cv makeItemWithIdentifier:@"VideoItem" forIndexPath:indexPath];
-    NSDictionary *video = self.filteredVideos[indexPath.item];
-    BOOL fav     = [self.favoriteIds containsObject:video[@"id"]];
-    BOOL playing = [video[@"id"] isEqualToString:self.playingWallpaperId];
-    [item configureWithVideoData:video isFavorite:fav isPlaying:playing];
+    NSDictionary *video = self.filteredVideos[(NSUInteger)indexPath.item];
+    BOOL favorite = [self.favoriteIds containsObject:video[@"id"]];
+    BOOL playing  = [video[@"id"] isEqualToString:self.playingWallpaperId];
+    [item configureWithVideoData:video isFavorite:favorite isPlaying:playing];
     return item;
 }
 
 // ---------------------------------------------------------------------------
 #pragma mark - NSCollectionViewDelegate
 
-- (void)collectionView:(NSCollectionView *)cv didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
-    NSIndexPath *ip = indexPaths.anyObject;
-    if (!ip) return;
+- (void)collectionView:(NSCollectionView *)cv
+didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
+    NSIndexPath *indexPath = indexPaths.anyObject;
+    if (!indexPath || indexPath.item >= (NSInteger)self.filteredVideos.count) return;
 
-    NSDictionary *video    = self.filteredVideos[ip.item];
-    NSString *videoPath    = video[@"path"];
-    NSString *videoTitle   = video[@"title"];
-    NSString *videoId      = video[@"id"];
+    // Selection and application used to be the same event, which made arrow-key
+    // navigation impossible: walking the grid would reload the desktop video on
+    // every keypress. A left click still applies immediately — anything else
+    // (arrow keys, right click, programmatic focus) only moves the focus ring.
+    NSEventType type = NSApp.currentEvent.type;
+    if (type != NSEventTypeLeftMouseUp && type != NSEventTypeLeftMouseDown) return;
 
-    BOOL wasMuted = self.videoRenderer.muted;
-    BOOL success  = [self.videoRenderer loadAndPlayVideo:videoPath];
-
-    if (success) {
-        self.playingWallpaperId = videoId;
-
-        // Persist last-played ID
-        [[NSUserDefaults standardUserDefaults] setObject:videoId forKey:kDefaultsLastWallpaperId];
-
-        // Track recent (most-recent first, max 20)
-        [self.recentIds removeObject:videoId];
-        [self.recentIds insertObject:videoId atIndex:0];
-        while (self.recentIds.count > 20) [self.recentIds removeLastObject];
-        [self saveRecentIds];
-
-        if (wasMuted) [self.videoRenderer mute];
-        [self updateHeroForWallpaper:video];
-        [self.collectionView reloadData];
-        [self updateSidebarBadges];
-    }
+    [self applyWallpaper:self.filteredVideos[(NSUInteger)indexPath.item]];
 }
 
 // ---------------------------------------------------------------------------
-#pragma mark - Search
+#pragma mark - Keyboard Navigation
 
-- (void)updateCountLabel {
-    if (self.filteredVideos.count == self.videos.count) {
-        self.countLabel.stringValue = [NSString stringWithFormat:@"%lu wallpapers",
-                                       (unsigned long)self.videos.count];
+- (BOOL)handleGalleryKey:(MacieGalleryKey)key {
+    switch (key) {
+        case MacieGalleryKeyActivate: {
+            NSDictionary *video = [self focusedVideo];
+            if (!video) return NO;
+            [self applyWallpaper:video];
+            return YES;
+        }
+        case MacieGalleryKeyPreview: {
+            NSDictionary *video = [self focusedVideo];
+            if (!video) return NO;
+            [self showInHero:video];
+            return YES;
+        }
+        case MacieGalleryKeyCancel:
+            [self clearGalleryFocus];
+            [self cancelHeroPreview];
+            return YES;
+        case MacieGalleryKeyLeft:  return [self moveFocusBy:-1];
+        case MacieGalleryKeyRight: return [self moveFocusBy:1];
+        case MacieGalleryKeyUp:    return [self moveFocusBy:-(NSInteger)[self galleryColumnCount]];
+        case MacieGalleryKeyDown:  return [self moveFocusBy:(NSInteger)[self galleryColumnCount]];
+    }
+    return NO;
+}
+
+/// How many cards the flow layout currently fits per row. Derived from the same
+/// constants the layout was built with, so vertical arrow keys move exactly one row.
+- (NSUInteger)galleryColumnCount {
+    CGFloat available = self.scrollView.contentView.bounds.size.width - 2 * kMacieContentInset;
+    NSInteger columns = (NSInteger)floor((available + kMacieSpaceL) / (kMacieCardWidth + kMacieSpaceL));
+    return (NSUInteger)MAX(columns, (NSInteger)1);
+}
+
+- (NSDictionary *)focusedVideo {
+    NSIndexPath *indexPath = self.collectionView.selectionIndexPaths.anyObject;
+    if (!indexPath) return nil;
+    if (indexPath.item < 0 || indexPath.item >= (NSInteger)self.filteredVideos.count) return nil;
+    return self.filteredVideos[(NSUInteger)indexPath.item];
+}
+
+- (BOOL)moveFocusBy:(NSInteger)delta {
+    NSInteger count = (NSInteger)self.filteredVideos.count;
+    if (count == 0) return YES;   // consume the key rather than let AppKit beep
+
+    NSIndexPath *current = self.collectionView.selectionIndexPaths.anyObject;
+    NSInteger target;
+    if (!current) {
+        target = (delta > 0) ? 0 : count - 1;
     } else {
-        self.countLabel.stringValue = [NSString stringWithFormat:@"%lu of %lu",
-                                       (unsigned long)self.filteredVideos.count,
-                                       (unsigned long)self.videos.count];
+        target = current.item + delta;
+        if (target < 0 || target >= count) return YES;   // stop at the edges
     }
+
+    [self focusGalleryItemAtIndex:target
+                   scrollPosition:NSCollectionViewScrollPositionNearestVerticalEdge];
+    return YES;
 }
 
-- (void)searchFieldChanged:(NSSearchField *)sender {
-    [self applySearchFilter:sender.stringValue];
+- (void)focusGalleryItemAtIndex:(NSInteger)index
+                 scrollPosition:(NSCollectionViewScrollPosition)position {
+    [self clearGalleryFocus];
+    if (index < 0 || index >= (NSInteger)self.filteredVideos.count) return;
+
+    NSSet *selection = [NSSet setWithObject:[NSIndexPath indexPathForItem:index inSection:0]];
+    // -selectItemsAtIndexPaths:scrollPosition: updates the items' own selected
+    // state and scrolls in one step, and deliberately does not notify the delegate.
+    [self.collectionView selectItemsAtIndexPaths:selection scrollPosition:position];
 }
 
-- (void)controlTextDidChange:(NSNotification *)notification {
-    if (notification.object == self.searchField) {
-        [self applySearchFilter:self.searchField.stringValue];
+- (void)clearGalleryFocus {
+    NSSet<NSIndexPath *> *current = self.collectionView.selectionIndexPaths;
+    if (current.count) [self.collectionView deselectItemsAtIndexPaths:current];
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Context Menu
+
+- (NSMenu *)contextMenuForItemIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.filteredVideos.count) return nil;
+    NSDictionary *video = self.filteredVideos[(NSUInteger)index];
+
+    // Move the focus ring to the card under the cursor, so the menu can never
+    // appear to act on a wallpaper other than the one lit up.
+    [self focusGalleryItemAtIndex:index scrollPosition:NSCollectionViewScrollPositionNone];
+
+    BOOL favorite = [self.favoriteIds containsObject:video[@"id"]];
+    BOOL playing  = [video[@"id"] isEqualToString:self.playingWallpaperId];
+
+    NSMenu *menu = [[NSMenu alloc] init];
+    // Enabled state is set explicitly below, so AppKit must not recompute it.
+    menu.autoenablesItems = NO;
+
+    NSMenuItem *apply = [menu addItemWithTitle:@"Set as Wallpaper"
+                                        action:@selector(contextApply:)
+                                 keyEquivalent:@""];
+    apply.target = self;
+    apply.representedObject = video;
+    apply.enabled = !playing;
+
+    NSMenuItem *preview = [menu addItemWithTitle:@"Show in Preview"
+                                          action:@selector(contextPreview:)
+                                   keyEquivalent:@""];
+    preview.target = self;
+    preview.representedObject = video;
+
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *fav = [menu addItemWithTitle:(favorite ? @"Remove from Favorites"
+                                                       : @"Add to Favorites")
+                                      action:@selector(contextToggleFavorite:)
+                               keyEquivalent:@""];
+    fav.target = self;
+    fav.representedObject = video;
+
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *reveal = [menu addItemWithTitle:@"Reveal in Finder"
+                                         action:@selector(contextRevealInFinder:)
+                                  keyEquivalent:@""];
+    reveal.target = self;
+    reveal.representedObject = video;
+
+    NSMenuItem *copyTitle = [menu addItemWithTitle:@"Copy Title"
+                                            action:@selector(contextCopyTitle:)
+                                     keyEquivalent:@""];
+    copyTitle.target = self;
+    copyTitle.representedObject = video;
+
+    return menu;
+}
+
+- (void)contextApply:(NSMenuItem *)sender {
+    [self applyWallpaper:sender.representedObject];
+}
+
+- (void)contextPreview:(NSMenuItem *)sender {
+    [self showInHero:sender.representedObject];
+}
+
+- (void)contextToggleFavorite:(NSMenuItem *)sender {
+    NSDictionary *video = sender.representedObject;
+    NSString *wallpaperId = video[@"id"];
+    [self setFavorite:![self.favoriteIds containsObject:wallpaperId] forWallpaperId:wallpaperId];
+}
+
+- (void)contextRevealInFinder:(NSMenuItem *)sender {
+    NSString *path = ((NSDictionary *)sender.representedObject)[@"path"];
+    if (!path.length) return;
+    [[NSWorkspace sharedWorkspace] selectFile:path inFileViewerRootedAtPath:@""];
+}
+
+- (void)contextCopyTitle:(NSMenuItem *)sender {
+    NSString *title = ((NSDictionary *)sender.representedObject)[@"title"] ?: @"";
+    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+    [pasteboard clearContents];
+    [pasteboard writeObjects:@[title]];
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Targeted Item Updates
+
+/// Redraws one card in place. Applying a wallpaper used to call -reloadData, which
+/// rebuilt the entire grid — and reset its scroll position — to change two borders.
+- (void)refreshItemForWallpaperId:(NSString *)wallpaperId {
+    if (!wallpaperId.length) return;
+
+    NSUInteger index = [self indexOfWallpaperId:wallpaperId inArray:self.filteredVideos];
+    if (index == NSNotFound) return;
+
+    NSIndexPath *indexPath = [NSIndexPath indexPathForItem:(NSInteger)index inSection:0];
+    VideoCollectionItem *item = (VideoCollectionItem *)[self.collectionView itemAtIndexPath:indexPath];
+    // nil means the card is off-screen; it will be configured correctly from the
+    // data source when it scrolls back in.
+    if (!item) return;
+
+    item.isFavorite         = [self.favoriteIds containsObject:wallpaperId];
+    item.isPlayingWallpaper = [wallpaperId isEqualToString:self.playingWallpaperId];
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Storage Figures
+
+/// Reports what this app is responsible for on disk: the wallpaper videos it plays
+/// and the thumbnails it generated.
+///
+/// The background walk also records each file's size and creation date, which is
+/// what the size and date sorts run on — so those sorts cost no extra file I/O.
+- (void)updateStorageLabels {
+    NSArray<NSDictionary *> *snapshot = self.videos;
+
+    if (snapshot.count == 0) {
+        [self.sidebar setLibraryText:@"No wallpapers" cacheText:[self cacheUsageText]];
+        return;
     }
-}
 
-- (void)applySearchFilter:(NSString *)query {
-    NSArray *source = [self sourceArrayForCurrentSidebar];
-    if (query.length == 0) {
-        self.filteredVideos = source;
-    } else {
-        NSPredicate *pred = [NSPredicate predicateWithFormat:@"title CONTAINS[cd] %@", query];
-        self.filteredVideos = [source filteredArrayUsingPredicate:pred];
-    }
-    [self.collectionView reloadData];
-    [self updateCountLabel];
-}
+    [self.sidebar setLibraryText:[NSString stringWithFormat:@"%lu wallpapers",
+                                  (unsigned long)snapshot.count]
+                       cacheText:[self cacheUsageText]];
 
-/// Returns the subset of self.videos that the active sidebar section describes.
-- (NSArray<NSDictionary *> *)sourceArrayForCurrentSidebar {
-    switch (self.activeSidebarSection) {
-        case SidebarSectionFavorites:
-            return [self.videos filteredArrayUsingPredicate:
-                [NSPredicate predicateWithFormat:@"id IN %@", self.favoriteIds]];
-        case SidebarSectionRecent: {
-            NSMutableArray *out = [NSMutableArray array];
-            for (NSString *rid in self.recentIds) {
-                for (NSDictionary *v in self.videos) {
-                    if ([v[@"id"] isEqualToString:rid]) { [out addObject:v]; break; }
-                }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        long long total = 0;
+        NSMutableDictionary<NSString *, NSDictionary *> *stats =
+            [NSMutableDictionary dictionaryWithCapacity:snapshot.count];
+        NSFileManager *fm = [NSFileManager defaultManager];
+
+        for (NSDictionary *video in snapshot) {
+            NSDictionary *attributes = [fm attributesOfItemAtPath:video[@"path"] error:nil];
+            if (!attributes) continue;
+
+            long long size = (long long)[attributes fileSize];
+            total += size;
+
+            NSDate *added = attributes[NSFileCreationDate] ?: attributes[NSFileModificationDate];
+            stats[video[@"id"]] = @{ @"size": @(size),
+                                     @"date": @(added.timeIntervalSince1970) };
+        }
+
+        NSString *sizeText = [NSByteCountFormatter stringFromByteCount:total
+                                                           countStyle:NSByteCountFormatterCountStyleFile];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            // A reload may have replaced the library while this was running.
+            if (!strongSelf || strongSelf.videos != snapshot) return;
+
+            strongSelf.fileStats = [stats copy];
+            [strongSelf.sidebar setLibraryText:[NSString stringWithFormat:@"%lu videos · %@",
+                                                (unsigned long)snapshot.count, sizeText]
+                                     cacheText:[strongSelf cacheUsageText]];
+
+            // The size and date sorts had nothing to order by until this moment.
+            if (strongSelf.sortOrder == MacieGallerySortNewestFirst ||
+                strongSelf.sortOrder == MacieGallerySortLargestFirst) {
+                [strongSelf applyCurrentFilter];
             }
-            return [out copy];
-        }
-        default:
-            if (self.activeSidebarSection >= SidebarSectionCollection &&
-                self.activeCollectionName) {
-                NSArray<NSString *> *kws = CollectionKeywords()[self.activeCollectionName];
-                NSMutableArray *out = [NSMutableArray array];
-                for (NSDictionary *v in self.videos) {
-                    NSString *lower = [v[@"title"] lowercaseString];
-                    for (NSString *kw in kws) {
-                        if ([lower containsString:kw]) { [out addObject:v]; break; }
-                    }
-                }
-                return [out copy];
-            }
-            return self.videos;
-    }
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Sidebar Actions
-
-- (void)sidebarButtonClicked:(NSButton *)sender {
-    NSInteger tag = sender.tag;
-
-    if (tag == SidebarSectionRandom) {
-        [self playRandomWallpaper:sender];
-        return;
-    }
-    if (tag >= SidebarSectionSettings) {
-        [self showSettingsSheet:sender];
-        return;
-    }
-
-    self.activeSidebarSection = (SidebarSection)tag;
-
-    if (tag >= SidebarSectionCollection) {
-        NSInteger idx = tag - SidebarSectionCollection;
-        NSArray<NSString *> *names = @[@"Anime", @"Nature", @"Cyberpunk", @"Space", @"Games", @"Movies"];
-        if (idx < (NSInteger)names.count) {
-            self.activeCollectionName = names[idx];
-            self.galleryHeaderLabel.stringValue = names[idx];
-        }
-    } else {
-        self.activeCollectionName = nil;
-        NSArray<NSString *> *titles = @[@"Library", @"Favorites", @"Recent"];
-        if (tag < (NSInteger)titles.count) {
-            self.galleryHeaderLabel.stringValue = titles[tag];
-        }
-    }
-
-    [self.searchField setStringValue:@""];
-    self.filteredVideos = [self sourceArrayForCurrentSidebar];
-    [self.collectionView reloadData];
-    [self updateCountLabel];
-    [self updateSidebarSelection];
-}
-
-- (void)updateSidebarSelection {
-    NSArray<NSButton *> *all = [self allSidebarButtons];
-    for (NSButton *btn in all) {
-        BOOL active = (btn.tag == self.activeSidebarSection);
-        btn.wantsLayer = YES;
-        btn.layer.backgroundColor = active
-            ? [[NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:0.2] CGColor]
-            : [NSColor clearColor].CGColor;
-        // Highlight text
-        NSMutableAttributedString *title = [btn.attributedTitle mutableCopy];
-        [title addAttribute:NSForegroundColorAttributeName
-                      value:(active ? [NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0]
-                                    : [NSColor labelColor])
-                      range:NSMakeRange(0, title.length)];
-        [btn setAttributedTitle:title];
-    }
-}
-
-- (NSArray<NSButton *> *)allSidebarButtons {
-    NSMutableArray *all = [NSMutableArray arrayWithObjects:
-        self.librarySidebarButton, self.favoritesSidebarButton,
-        self.recentSidebarButton, self.randomSidebarButton,
-        self.settingsSidebarButton, nil];
-    [all addObjectsFromArray:self.collectionButtons];
-    return [all copy];
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Sidebar Badge Updates
-
-- (void)updateSidebarBadges {
-    self.libraryCountLabel.stringValue   = [NSString stringWithFormat:@"%lu", (unsigned long)self.videos.count];
-    self.favoritesCountLabel.stringValue = [NSString stringWithFormat:@"%lu", (unsigned long)self.favoriteIds.count];
-    self.recentCountLabel.stringValue    = [NSString stringWithFormat:@"%lu", (unsigned long)self.recentIds.count];
-}
-
-- (void)updateStorageLabel {
-    NSDictionary *attrs = [[NSFileManager defaultManager]
-        attributesOfFileSystemForPath:NSHomeDirectory() error:nil];
-    long long total = [[attrs objectForKey:NSFileSystemSize] longLongValue];
-    long long free  = [[attrs objectForKey:NSFileSystemFreeSize] longLongValue];
-    long long used  = total - free;
-
-    CGFloat usedGB  = used  / 1e9;
-    CGFloat totalGB = total / 1e9;
-
-    self.storageValueLabel.stringValue = [NSString stringWithFormat:@"%.1f GB / %.0f GB", usedGB, totalGB];
-
-    CGFloat fillRatio = (total > 0) ? (CGFloat)used / (CGFloat)total : 0;
-    CGFloat trackW = self.storageProgressTrack.bounds.size.width;
-    self.storageProgressFill.frame = NSMakeRect(0, 0, trackW * fillRatio, 4);
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Hero Section Updates
-
-- (void)updateHeroForCurrentWallpaper {
-    if (!self.playingWallpaperId) { return; }
-    NSPredicate *p = [NSPredicate predicateWithFormat:@"id == %@", self.playingWallpaperId];
-    NSDictionary *vid = [[self.videos filteredArrayUsingPredicate:p] firstObject];
-    if (vid) [self updateHeroForWallpaper:vid];
-}
-
-- (void)updateHeroForWallpaper:(NSDictionary *)video {
-    self.heroTitleLabel.stringValue = video[@"title"] ?: @"";
-    self.heroMetaLabel.stringValue  = @"4K • Video";
-    self.heroDescLabel.stringValue  = @"";   // project.json description can be added later
-    [self updateHeroFavoriteButton];
-
-    // Load hero thumbnail asynchronously
-    NSString *videoId   = video[@"id"];
-    NSString *videoPath = video[@"path"];
-    ThumbnailCache *cache = [ThumbnailCache sharedCache];
-    NSImage *cached = [cache cachedThumbnailForId:videoId];
-    if (cached) {
-        self.heroThumbnailView.image = cached;
-        return;
-    }
-    __weak typeof(self) ws = self;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        NSString *dir     = [videoPath stringByDeletingLastPathComponent];
-        NSString *preview = [dir stringByAppendingPathComponent:@"preview.jpg"];
-        NSImage *thumb = nil;
-        if ([[NSFileManager defaultManager] fileExistsAtPath:preview]) {
-            thumb = [cache thumbnailForPreviewPath:preview wallpaperId:videoId];
-        }
-        if (!thumb) thumb = [cache thumbnailForVideoPath:videoPath wallpaperId:videoId];
-        if (thumb) {
-            dispatch_async(dispatch_get_main_queue(), ^{ ws.heroThumbnailView.image = thumb; });
-        }
+        });
     });
 }
 
-- (void)updateHeroFavoriteButton {
-    if (!self.heroFavoriteButton) return;
-    BOOL fav = self.playingWallpaperId && [self.favoriteIds containsObject:self.playingWallpaperId];
-    if (@available(macOS 11.0, *)) {
-        NSString *sym = fav ? @"heart.fill" : @"heart";
-        [self.heroFavoriteButton setImage:[NSImage imageWithSystemSymbolName:sym accessibilityDescription:nil]];
-        self.heroFavoriteButton.contentTintColor = fav ? [NSColor systemPinkColor] : [NSColor secondaryLabelColor];
-    }
+- (NSString *)cacheUsageText {
+    NSUInteger bytes = [[ThumbnailCache sharedCache] cacheSize];
+    NSString *sizeText = [NSByteCountFormatter stringFromByteCount:(long long)bytes
+                                                       countStyle:NSByteCountFormatterCountStyleFile];
+    return [NSString stringWithFormat:@"%@ thumbnails", sizeText];
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,8 +1092,8 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 }
 
 - (void)saveFavoriteIds {
-    [[NSUserDefaults standardUserDefaults]
-        setObject:self.favoriteIds.allObjects forKey:kDefaultsFavoriteIds];
+    [[NSUserDefaults standardUserDefaults] setObject:self.favoriteIds.allObjects
+                                             forKey:kDefaultsFavoriteIds];
 }
 
 - (NSMutableArray<NSString *> *)loadRecentIds {
@@ -1100,307 +1106,196 @@ typedef NS_ENUM(NSInteger, SidebarSection) {
 }
 
 - (void)setupFavoriteToggleObserver {
-    [[NSNotificationCenter defaultCenter]
-        addObserver:self
-           selector:@selector(wallpaperFavoriteToggled:)
-               name:@"WallpaperFavoriteToggled"
-             object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(wallpaperFavoriteToggled:)
+                                                 name:kNotificationWallpaperFavoriteToggled
+                                               object:nil];
 }
 
+/// Posted by a card's own heart button.
 - (void)wallpaperFavoriteToggled:(NSNotification *)note {
-    NSString *wid = note.userInfo[@"id"];
-    BOOL fav = [note.userInfo[@"favorite"] boolValue];
-    if (!wid.length) return;
-
-    if (fav) {
-        [self.favoriteIds addObject:wid];
-    } else {
-        [self.favoriteIds removeObject:wid];
-    }
-    [self saveFavoriteIds];
-    [self updateSidebarBadges];
-    if ([wid isEqualToString:self.playingWallpaperId]) {
-        [self updateHeroFavoriteButton];
-    }
+    NSString *wallpaperId = note.userInfo[@"id"];
+    if (!wallpaperId.length) return;
+    [self setFavorite:[note.userInfo[@"favorite"] boolValue] forWallpaperId:wallpaperId];
 }
 
-- (void)heroFavoriteClicked:(NSButton *)sender {
-    if (!self.playingWallpaperId) return;
-    BOOL isFav = [self.favoriteIds containsObject:self.playingWallpaperId];
-    if (isFav) {
-        [self.favoriteIds removeObject:self.playingWallpaperId];
-    } else {
-        [self.favoriteIds addObject:self.playingWallpaperId];
-    }
+/// The single path for a favorite change, so persistence, the badge, the card and
+/// the hero panel cannot disagree about what is favorited.
+- (void)setFavorite:(BOOL)favorite forWallpaperId:(NSString *)wallpaperId {
+    if (!wallpaperId.length) return;
+
+    if (favorite) [self.favoriteIds addObject:wallpaperId];
+    else          [self.favoriteIds removeObject:wallpaperId];
+
     [self saveFavoriteIds];
-    [self updateHeroFavoriteButton];
     [self updateSidebarBadges];
-    [self.collectionView reloadData];
+
+    if ([wallpaperId isEqualToString:self.heroPanel.wallpaper[@"id"]]) {
+        [self.heroPanel setFavorite:favorite];
+    }
+
+    // The Favorites section is defined by the set that just changed, so there the
+    // grid has to be rebuilt rather than nudged.
+    if (self.activeSection == MacieSidebarSectionFavorites) [self applyCurrentFilter];
+    else                                                    [self refreshItemForWallpaperId:wallpaperId];
 }
 
 // ---------------------------------------------------------------------------
-#pragma mark - Playback Controls
+#pragma mark - Playback
 
-- (void)applyHeroWallpaper:(id)sender {
-    // The playing wallpaper is already applied to the desktop.
-    // This button can be used to re-apply if it was paused via performance monitor.
-    [self.videoRenderer play];
+/// The single path by which a wallpaper reaches the desktop. Every entry point —
+/// gallery click, Return, the context menu, Random, Next/Prev, the hero's Apply —
+/// routes through here so persistence, recents, the hero panel and the mute button
+/// can never diverge.
+- (BOOL)applyWallpaper:(NSDictionary *)video {
+    NSString *videoPath = video[@"path"];
+    NSString *videoId   = video[@"id"];
+    if (!videoPath.length || !videoId.length) return NO;
+
+    if (![self.videoRenderer loadAndPlayVideo:videoPath]) {
+        NSLog(@"MainWindowController: failed to apply wallpaper %@", videoId);
+        [self presentApplyFailureForTitle:video[@"title"]];
+        return NO;
+    }
+
+    NSString *previousId = self.playingWallpaperId;
+    self.playingWallpaperId = videoId;
+    [[NSUserDefaults standardUserDefaults] setObject:videoId forKey:kDefaultsLastWallpaperId];
+
+    // Recents: most-recent first, capped.
+    [self.recentIds removeObject:videoId];
+    [self.recentIds insertObject:videoId atIndex:0];
+    while (self.recentIds.count > kMaxRecentWallpapers) [self.recentIds removeLastObject];
+    [self saveRecentIds];
+
+    // The renderer carries mute state across loads, so only the button needs
+    // bringing back in sync. playingWallpaperId is already the new one, so the hero
+    // resolves this as PLAYING rather than PREVIEW.
+    [self showInHero:video];
+    [self updateMuteButton];
+    [self updateSidebarBadges];
+
+    // Two cards changed, so two cards are redrawn.
+    [self refreshItemForWallpaperId:previousId];
+    [self refreshItemForWallpaperId:videoId];
+
+    // Recent is ordered by exactly what just happened.
+    if (self.activeSection == MacieSidebarSectionRecent) [self applyCurrentFilter];
+
+    return YES;
 }
 
-- (void)playRandomWallpaper:(id)sender {
-    if (self.videos.count == 0) return;
-    NSUInteger idx = arc4random_uniform((uint32_t)self.videos.count);
-    NSDictionary *video = self.videos[idx];
-    BOOL wasMuted = self.videoRenderer.muted;
-    BOOL success  = [self.videoRenderer loadAndPlayVideo:video[@"path"]];
-    if (success) {
-        self.playingWallpaperId = video[@"id"];
-        [[NSUserDefaults standardUserDefaults] setObject:video[@"id"] forKey:kDefaultsLastWallpaperId];
-        if (wasMuted) [self.videoRenderer mute];
-        [self updateHeroForWallpaper:video];
-        [self.collectionView reloadData];
-    }
+/// A failed apply used to print to the log and read as a dead click.
+- (void)presentApplyFailureForTitle:(NSString *)title {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Could Not Play This Wallpaper";
+    alert.informativeText = [NSString stringWithFormat:
+        @"“%@” could not be loaded. Its video file may have been moved, or it may be "
+         "in a format macOS cannot play.", title.length ? title : @"This wallpaper"];
+    alert.alertStyle = NSAlertStyleWarning;
+
+    if (self.window.isVisible) [alert beginSheetModalForWindow:self.window completionHandler:nil];
+    else                       [alert runModal];
 }
 
-- (void)prevWallpaper:(id)sender {
-    if (!self.playingWallpaperId || self.videos.count == 0) return;
-    NSInteger cur = -1;
-    for (NSInteger i = 0; i < (NSInteger)self.videos.count; i++) {
-        if ([self.videos[i][@"id"] isEqualToString:self.playingWallpaperId]) { cur = i; break; }
-    }
-    NSInteger prev = (cur <= 0) ? (NSInteger)self.videos.count - 1 : cur - 1;
-    NSDictionary *video = self.videos[prev];
-    if ([self.videoRenderer loadAndPlayVideo:video[@"path"]]) {
-        self.playingWallpaperId = video[@"id"];
-        [[NSUserDefaults standardUserDefaults] setObject:video[@"id"] forKey:kDefaultsLastWallpaperId];
-        [self updateHeroForWallpaper:video];
-        [self.collectionView reloadData];
-    }
+/// Next and Previous follow what the user is looking at. If the playing wallpaper
+/// is not in the current filter there is no "next" relative to it, so the whole
+/// library is used instead.
+- (NSArray<NSDictionary *> *)playbackOrder {
+    NSUInteger index = [self indexOfWallpaperId:self.playingWallpaperId inArray:self.filteredVideos];
+    if (self.filteredVideos.count > 0 && index != NSNotFound) return self.filteredVideos;
+    return self.videos;
 }
 
 - (void)nextWallpaper:(id)sender {
-    if (!self.playingWallpaperId || self.videos.count == 0) return;
-    NSInteger cur = -1;
-    for (NSInteger i = 0; i < (NSInteger)self.videos.count; i++) {
-        if ([self.videos[i][@"id"] isEqualToString:self.playingWallpaperId]) { cur = i; break; }
-    }
-    NSInteger next = (cur >= (NSInteger)self.videos.count - 1) ? 0 : cur + 1;
-    NSDictionary *video = self.videos[next];
-    if ([self.videoRenderer loadAndPlayVideo:video[@"path"]]) {
-        self.playingWallpaperId = video[@"id"];
-        [[NSUserDefaults standardUserDefaults] setObject:video[@"id"] forKey:kDefaultsLastWallpaperId];
-        [self updateHeroForWallpaper:video];
-        [self.collectionView reloadData];
-    }
+    NSArray<NSDictionary *> *order = [self playbackOrder];
+    if (order.count == 0) return;
+    NSUInteger current = [self indexOfWallpaperId:self.playingWallpaperId inArray:order];
+    NSUInteger next = (current == NSNotFound || current + 1 >= order.count) ? 0 : current + 1;
+    [self applyWallpaper:order[next]];
 }
 
-- (void)toolbarToggleMute:(id)sender {
-    if (self.videoRenderer.muted) {
-        [self.videoRenderer unmute];
-    } else {
-        [self.videoRenderer mute];
-    }
-    [[NSUserDefaults standardUserDefaults] setBool:self.videoRenderer.muted forKey:kDefaultsLastMuteState];
-    [self updateMuteButton];
+- (void)prevWallpaper:(id)sender {
+    NSArray<NSDictionary *> *order = [self playbackOrder];
+    if (order.count == 0) return;
+    NSUInteger current = [self indexOfWallpaperId:self.playingWallpaperId inArray:order];
+    NSUInteger previous = (current == NSNotFound || current == 0) ? order.count - 1 : current - 1;
+    [self applyWallpaper:order[previous]];
 }
 
-- (void)updateMuteButton {
-    if (!self.muteToolbarButton) return;
-    BOOL muted = self.videoRenderer.muted;
-    if (@available(macOS 11.0, *)) {
-        NSString *sym = muted ? @"speaker.slash.fill" : @"speaker.wave.2";
-        [self.muteToolbarButton setImage:[NSImage imageWithSystemSymbolName:sym accessibilityDescription:nil]];
-    }
-    self.muteToolbarButton.contentTintColor = muted
-        ? [NSColor colorWithRed:0.23 green:0.51 blue:0.96 alpha:1.0]
-        : [NSColor secondaryLabelColor];
+- (void)playRandomWallpaper:(id)sender {
+    // Random inside Favorites should pick a favorite: the visible set is the set
+    // the user means. Falls back to the library when the view is too small to
+    // choose from.
+    NSArray<NSDictionary *> *pool = (self.filteredVideos.count > 1) ? self.filteredVideos : self.videos;
+    if (pool.count == 0) return;
+    if (pool.count == 1) { [self applyWallpaper:pool[0]]; return; }
+
+    // Never pick the wallpaper that is already playing — a Random that changes
+    // nothing looks like a broken button.
+    NSUInteger current = [self indexOfWallpaperId:self.playingWallpaperId inArray:pool];
+    NSUInteger index;
+    do {
+        index = arc4random_uniform((uint32_t)pool.count);
+    } while (index == current);
+
+    [self applyWallpaper:pool[index]];
 }
 
 - (void)toolbarShuffle:(id)sender {
     [self playRandomWallpaper:sender];
 }
 
+- (void)toolbarToggleMute:(id)sender {
+    if (self.videoRenderer.muted) [self.videoRenderer unmute];
+    else                          [self.videoRenderer mute];
+
+    [[NSUserDefaults standardUserDefaults] setBool:self.videoRenderer.muted
+                                            forKey:kDefaultsLastMuteState];
+    [self updateMuteButton];
+}
+
+- (void)updateMuteButton {
+    if (!self.muteToolbarButton) return;
+
+    BOOL muted = self.videoRenderer.muted;
+    if (@available(macOS 11.0, *)) {
+        NSString *symbol = muted ? @"speaker.slash.fill" : @"speaker.wave.2";
+        [self.muteToolbarButton setImage:[NSImage imageWithSystemSymbolName:symbol
+                                                  accessibilityDescription:nil]];
+    }
+    self.muteToolbarButton.contentTintColor = muted ? MacieAccentColor() : MacieSecondaryTextColor();
+    self.muteToolbarButton.toolTip = muted ? @"Unmute wallpaper audio (⇧⌘M)"
+                                           : @"Mute wallpaper audio (⇧⌘M)";
+}
+
 // ---------------------------------------------------------------------------
-#pragma mark - Settings Sheet
+#pragma mark - Settings
 
 - (void)showSettingsSheet:(id)sender {
-    NSWindow *sheet = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 480, 500)
-                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
-                    backing:NSBackingStoreBuffered
-                      defer:NO];
-    sheet.title = @"Settings";
+    if (!self.settingsController) {
+        self.settingsController = [[SettingsSheetController alloc] init];
 
-    NSView *sv = sheet.contentView;
-    sv.wantsLayer = YES;
-    sv.layer.backgroundColor = [[NSColor colorWithRed:0.11 green:0.11 blue:0.13 alpha:1.0] CGColor];
-
-    CGFloat lp = 24;
-    CGFloat y  = 440;
-
-    // Path
-    NSTextField *pathHdr = [self settingsHeader:@"Wallpaper Location" y:y];
-    [sv addSubview:pathHdr]; y -= 28;
-
-    NSUserDefaults *def = [NSUserDefaults standardUserDefaults];
-    NSString *cur = [def stringForKey:kDefaultsSteamappsPath];
-    NSTextField *pathVal = [[NSTextField alloc] initWithFrame:NSMakeRect(lp, y, 432, 22)];
-    pathVal.stringValue = cur ?: @"Not configured";
-    pathVal.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
-    pathVal.textColor = cur ? [NSColor systemGreenColor] : [NSColor systemRedColor];
-    pathVal.editable = NO; pathVal.bordered = YES;
-    pathVal.backgroundColor = [NSColor colorWithWhite:0.08 alpha:1.0];
-    [sv addSubview:pathVal]; y -= 34;
-
-    NSButton *changeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(lp, y, 180, 26)];
-    changeBtn.title = @"Change Steam Folder...";
-    changeBtn.bezelStyle = NSBezelStyleRounded;
-    changeBtn.target = self; changeBtn.action = @selector(changePathFromPreferences:);
-    [sv addSubview:changeBtn]; y -= 44;
-
-    // Performance
-    NSTextField *perfHdr = [self settingsHeader:@"Performance" y:y];
-    [sv addSubview:perfHdr]; y -= 28;
-
-    NSButton *batCb = [[NSButton alloc] initWithFrame:NSMakeRect(lp, y, 400, 22)];
-    [batCb setButtonType:NSButtonTypeSwitch];
-    batCb.title = @"Pause wallpaper when on battery power";
-    batCb.state = [def boolForKey:kDefaultsPauseOnBattery] ? NSControlStateValueOn : NSControlStateValueOff;
-    batCb.target = self; batCb.action = @selector(pauseOnBatteryChanged:);
-    [sv addSubview:batCb]; y -= 28;
-
-    NSButton *fsCb = [[NSButton alloc] initWithFrame:NSMakeRect(lp, y, 400, 22)];
-    [fsCb setButtonType:NSButtonTypeSwitch];
-    fsCb.title = @"Pause wallpaper when apps are fullscreen";
-    fsCb.state = [def boolForKey:kDefaultsPauseOnFullscreen] ? NSControlStateValueOn : NSControlStateValueOff;
-    fsCb.target = self; fsCb.action = @selector(pauseOnFullscreenChanged:);
-    [sv addSubview:fsCb]; y -= 44;
-
-    // Cache
-    NSTextField *cacheHdr = [self settingsHeader:@"Thumbnail Cache" y:y];
-    [sv addSubview:cacheHdr]; y -= 28;
-
-    self.cacheSizeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(lp, y, 350, 18)];
-    [self updateCacheSizeLabel];
-    self.cacheSizeLabel.font = [NSFont systemFontOfSize:12];
-    self.cacheSizeLabel.textColor = [NSColor secondaryLabelColor];
-    self.cacheSizeLabel.editable = NO; self.cacheSizeLabel.bordered = NO;
-    self.cacheSizeLabel.backgroundColor = [NSColor clearColor];
-    [sv addSubview:self.cacheSizeLabel]; y -= 28;
-
-    NSButton *clrBtn = [[NSButton alloc] initWithFrame:NSMakeRect(lp, y, 130, 26)];
-    clrBtn.title = @"Clear Cache";
-    clrBtn.bezelStyle = NSBezelStyleRounded;
-    clrBtn.target = self; clrBtn.action = @selector(clearThumbnailCache:);
-    [sv addSubview:clrBtn]; y -= 44;
-
-    // Launch at login
-    NSTextField *startHdr = [self settingsHeader:@"Startup" y:y];
-    [sv addSubview:startHdr]; y -= 28;
-
-    NSButton *loginCb = [[NSButton alloc] initWithFrame:NSMakeRect(lp, y, 380, 22)];
-    [loginCb setButtonType:NSButtonTypeSwitch];
-    loginCb.title = @"Launch MacieWallpaper at login";
-    loginCb.state = [self isLaunchAtLoginEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
-    loginCb.target = self; loginCb.action = @selector(launchAtLoginChanged:);
-    [sv addSubview:loginCb];
-
-    // Close button
-    NSButton *doneBtn = [[NSButton alloc] initWithFrame:NSMakeRect(390, 12, 70, 28)];
-    doneBtn.title = @"Done";
-    doneBtn.bezelStyle = NSBezelStyleRounded;
-    doneBtn.keyEquivalent = @"\r";
-    doneBtn.target = self; doneBtn.action = @selector(closeSettingsSheet:);
-    [sv addSubview:doneBtn];
-
-    [self.window beginSheet:sheet completionHandler:nil];
+        __weak typeof(self) weakSelf = self;
+        self.settingsController.onPathChangeRequested = ^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf.onWallpapersReloadRequested) strongSelf.onWallpapersReloadRequested();
+        };
+        self.settingsController.onCacheCleared = ^{
+            [weakSelf thumbnailCacheCleared];
+        };
+    }
+    [self.settingsController presentInWindow:self.window];
 }
 
-- (NSTextField *)settingsHeader:(NSString *)title y:(CGFloat)y {
-    NSTextField *f = [[NSTextField alloc] initWithFrame:NSMakeRect(24, y, 420, 18)];
-    f.stringValue = title;
-    f.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-    f.textColor = [NSColor labelColor];
-    f.editable = NO; f.bordered = NO;
-    f.backgroundColor = [NSColor clearColor];
-    return f;
-}
-
-- (void)closeSettingsSheet:(id)sender {
-    [self.window endSheet:self.window.attachedSheet];
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Settings Actions (kept from prior implementation)
-
-- (void)changePathFromPreferences:(id)sender {
-    if (self.onWallpapersReloadRequested) self.onWallpapersReloadRequested();
-}
-
-- (void)pauseOnBatteryChanged:(id)sender {
-    NSButton *cb = (NSButton *)sender;
-    [[NSUserDefaults standardUserDefaults] setBool:(cb.state == NSControlStateValueOn) forKey:kDefaultsPauseOnBattery];
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"PerformanceSettingsChanged" object:nil];
-}
-
-- (void)pauseOnFullscreenChanged:(id)sender {
-    NSButton *cb = (NSButton *)sender;
-    [[NSUserDefaults standardUserDefaults] setBool:(cb.state == NSControlStateValueOn) forKey:kDefaultsPauseOnFullscreen];
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"PerformanceSettingsChanged" object:nil];
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - Cache Management
-
-- (void)updateCacheSizeLabel {
-    if (!self.cacheSizeLabel) return;
-    ThumbnailCache *cache = [ThumbnailCache sharedCache];
-    NSUInteger bytes = [cache cacheSize];
-    NSString *sizeStr;
-    if      (bytes < 1024)        sizeStr = [NSString stringWithFormat:@"%lu bytes", (unsigned long)bytes];
-    else if (bytes < 1024*1024)   sizeStr = [NSString stringWithFormat:@"%.1f KB",   bytes / 1024.0];
-    else                          sizeStr = [NSString stringWithFormat:@"%.1f MB",   bytes / (1024.0*1024.0)];
-    self.cacheSizeLabel.stringValue = [NSString stringWithFormat:@"Cache size: %@", sizeStr];
-}
-
-- (void)clearThumbnailCache:(id)sender {
-    [[ThumbnailCache sharedCache] clearCache];
-    [self updateCacheSizeLabel];
+/// Every thumbnail on screen just became invalid, so this is the one case where a
+/// full reload is the correct response. Re-showing the hero's wallpaper makes it
+/// re-fetch its own thumbnail too.
+- (void)thumbnailCacheCleared {
+    [self updateStorageLabels];
     [self.collectionView reloadData];
+    [self showInHero:self.heroPanel.wallpaper];
 }
-
-// ---------------------------------------------------------------------------
-#pragma mark - Launch at Login (kept from prior implementation)
-
-- (BOOL)isLaunchAtLoginEnabled {
-    if (@available(macOS 13.0, *)) {
-        return [SMAppService mainAppService].status == SMAppServiceStatusEnabled;
-    }
-    return NO;
-}
-
-- (void)launchAtLoginChanged:(NSButton *)sender {
-    if (@available(macOS 13.0, *)) {
-        NSError *err = nil;
-        BOOL enable = (sender.state == NSControlStateValueOn);
-        if (enable) [[SMAppService mainAppService] registerAndReturnError:&err];
-        else        [[SMAppService mainAppService] unregisterAndReturnError:&err];
-        if (err) {
-            sender.state = [self isLaunchAtLoginEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
-            NSAlert *alert = [[NSAlert alloc] init];
-            alert.messageText = enable ? @"Could Not Enable" : @"Could Not Disable";
-            alert.informativeText = err.localizedDescription;
-            [alert runModal];
-        }
-    } else {
-        sender.state = NSControlStateValueOff;
-    }
-}
-
-// ---------------------------------------------------------------------------
-#pragma mark - No-op placeholder
-
-- (void)noop:(id)sender {}
 
 // ---------------------------------------------------------------------------
 #pragma mark - Dealloc
