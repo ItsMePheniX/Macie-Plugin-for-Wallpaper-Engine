@@ -12,6 +12,7 @@
 @property (weak, nonatomic) NSWindow *window;
 @property (strong, nonatomic) AVQueuePlayer *queuePlayer;
 @property (strong, nonatomic) AVPlayerItem *playerItem;
+@property (strong, nonatomic) AVPlayerLooper *looper;
 /// Tracks whether the KVO observer for "status" is currently registered.
 /// Guards removal so it is never skipped even if queuePlayer becomes nil first.
 @property (nonatomic) BOOL isObservingStatus;
@@ -24,6 +25,9 @@
     if (self) {
         self.window = window;
         _isObservingStatus = NO;
+        // Start silent; AppDelegate restores the previous session's state after loading.
+        _muted  = YES;
+        _volume = 0.0;
     }
     return self;
 }
@@ -60,9 +64,9 @@
 
     [self.queuePlayer play];
 
-    self.queuePlayer.volume = 0.0;
-    _volume = 0.0;
-    _muted = YES;
+    // Carry the existing audio state onto the new player instead of resetting it,
+    // so switching wallpapers does not silently re-mute the desktop.
+    self.queuePlayer.volume = _muted ? 0.0 : _volume;
 
     // Register KVO and track the flag so removal is always safe.
     [self.playerItem addObserver:self
