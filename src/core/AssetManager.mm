@@ -76,47 +76,11 @@ static NSDictionary *ReadJsonDictionary(NSString *path) {
 }
 
 // ---------------------------------------------------------------------------
-#pragma mark - AssetManager
+#pragma mark - Project parsing
 
-AssetManager::AssetManager() {
-}
-
-AssetManager::~AssetManager() {
-}
-
-std::vector<WallpaperProject> AssetManager::scanWallpaperEngine(const std::string& steamappsPath) {
-    wallpapers.clear();
-
-    std::string workshopPath = steamappsPath + "/" + [kWorkshopSubpath UTF8String];
-
-    std::error_code ec;
-    if (!fs::exists(workshopPath, ec)) {
-        NSLog(@"AssetManager: workshop path not found: %s", workshopPath.c_str());
-        return wallpapers;
-    }
-
-    for (const auto& entry : fs::directory_iterator(workshopPath, ec)) {
-        if (!entry.is_directory(ec)) {
-            continue;
-        }
-        auto project = parseProjectJson(entry.path().string());
-        if (project.has_value()) {
-            wallpapers.push_back(project.value());
-        }
-    }
-
-    if (ec) {
-        NSLog(@"AssetManager: error while scanning %s: %s",
-              workshopPath.c_str(), ec.message().c_str());
-    }
-
-    NSLog(@"AssetManager: scan complete — %lu video wallpapers found",
-          (unsigned long)wallpapers.size());
-
-    return wallpapers;
-}
-
-std::optional<WallpaperProject> AssetManager::parseProjectJson(const std::string& folderPath) {
+/// Reads one workshop folder. Returns nullopt for anything that is not a playable
+/// video wallpaper. Touches no shared state, so it is safe on any thread.
+static std::optional<WallpaperProject> ParseProjectJson(const std::string& folderPath) {
     NSString *folder = [NSString stringWithUTF8String:folderPath.c_str()];
     if (!folder) {
         return std::nullopt;
@@ -166,6 +130,78 @@ std::optional<WallpaperProject> AssetManager::parseProjectJson(const std::string
     }
 
     return project;
+}
+
+/// Counts the subdirectories of the workshop folder. Enumerating entries is the
+/// cheap half of a scan — reading and parsing a project.json per folder is the
+/// expensive half — so paying for it twice buys an honest progress total.
+static size_t CountWorkshopFolders(const std::string& workshopPath) {
+    size_t total = 0;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(workshopPath, ec)) {
+        if (entry.is_directory(ec)) total++;
+    }
+    return total;
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - AssetManager
+
+AssetManager::AssetManager() {
+}
+
+AssetManager::~AssetManager() {
+}
+
+std::vector<WallpaperProject> AssetManager::scanWallpaperEngine(
+    const std::string& steamappsPath,
+    const ScanProgressCallback& onProgress) {
+
+    std::vector<WallpaperProject> found;
+
+    std::string workshopPath = steamappsPath + "/" + [kWorkshopSubpath UTF8String];
+
+    std::error_code ec;
+    if (!fs::exists(workshopPath, ec)) {
+        NSLog(@"AssetManager: workshop path not found: %s", workshopPath.c_str());
+        if (onProgress) onProgress(0, 0);
+        return found;
+    }
+
+    const size_t total = CountWorkshopFolders(workshopPath);
+    if (onProgress) onProgress(0, total);
+
+    size_t scanned = 0;
+    for (const auto& entry : fs::directory_iterator(workshopPath, ec)) {
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        // Parsing hundreds of project.json files fills the autorelease pool with
+        // NSData and NSDictionary temporaries. Draining per folder keeps the scan's
+        // peak memory flat instead of proportional to the library size.
+        @autoreleasepool {
+            auto project = ParseProjectJson(entry.path().string());
+            if (project.has_value()) {
+                found.push_back(project.value());
+            }
+        }
+        scanned++;
+        if (onProgress) onProgress(scanned, total);
+    }
+
+    if (ec) {
+        NSLog(@"AssetManager: error while scanning %s: %s",
+              workshopPath.c_str(), ec.message().c_str());
+    }
+
+    NSLog(@"AssetManager: scan complete — %lu video wallpapers found in %lu folders",
+          (unsigned long)found.size(), (unsigned long)scanned);
+
+    return found;
+}
+
+void AssetManager::adoptWallpapers(std::vector<WallpaperProject> scanned) {
+    wallpapers = std::move(scanned);
 }
 
 std::vector<WallpaperProject> AssetManager::getVideoWallpapers() const {
