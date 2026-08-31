@@ -42,6 +42,7 @@ set(SOURCES
 
     # Core
     src/core/Constants.m
+    src/core/LastWallpaperSnapshot.m        # last-played wallpaper, restored before the scan
     src/core/AssetManager.mm               # Obj-C++: NSJSONSerialization behind a C++ API
     src/core/MacieAssetManagerWrapper.mm   # Typed Obj-C++ wrapper for AssetManager
     src/core/ThumbnailCache.mm
@@ -80,6 +81,7 @@ set(HEADERS
     include/WelcomeWindowController.h
     include/AppDelegate.h
     include/Constants.h
+    include/LastWallpaperSnapshot.h
     include/ThumbnailCache.h
     include/WallpaperMetadataCache.h
     include/PerformanceMonitor.h
