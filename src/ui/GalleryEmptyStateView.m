@@ -9,17 +9,13 @@
 #import "DesignSystem.h"
 
 @implementation GalleryEmptyStateView {
-    NSImageView         *_iconView;
-    NSTextField         *_titleLabel;
-    NSTextField         *_subtitleLabel;
-    NSProgressIndicator *_progressBar;   // created on first use
-    BOOL                 _showingProgress;
+    NSImageView *_iconView;
+    NSTextField *_titleLabel;
+    NSTextField *_subtitleLabel;
 }
 
 static const CGFloat kIconSize     = 44.0;
 static const CGFloat kBlockWidth   = 360.0;
-static const CGFloat kBarHeight    = 8.0;
-static const CGFloat kSpinnerSize  = 28.0;
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
@@ -55,14 +51,9 @@ static const CGFloat kSpinnerSize  = 28.0;
     CGFloat blockW = MIN(kBlockWidth, w - 2 * kMacieContentInset);
     CGFloat x = (w - blockW) / 2.0;
 
-    // The progress bar occupies the same slot as the symbol, at its own height.
-    BOOL indeterminate = _showingProgress && _progressBar.indeterminate;
-    CGFloat leadH = kIconSize;
-    if (_showingProgress) leadH = indeterminate ? kSpinnerSize : kBarHeight;
-
     CGFloat titleH    = ceil(_titleLabel.font.boundingRectForFont.size.height) + 2;
     CGFloat subtitleH = _subtitleLabel.stringValue.length ? 34.0 : 0.0;
-    CGFloat totalH    = leadH + kMacieSpaceL + titleH +
+    CGFloat totalH    = kIconSize + kMacieSpaceL + titleH +
                         (subtitleH ? kMacieSpaceXS + subtitleH : 0);
 
     // Sits slightly above true centre; a block centred in the scroll view reads
@@ -70,14 +61,8 @@ static const CGFloat kSpinnerSize  = 28.0;
     CGFloat top = (h + totalH) / 2.0 + kMacieSpaceXL;
     if (top > h) top = h;
 
-    CGFloat y = top - leadH;
-    if (_showingProgress) {
-        _progressBar.frame = indeterminate
-            ? NSMakeRect((w - kSpinnerSize) / 2.0, y, kSpinnerSize, kSpinnerSize)
-            : NSMakeRect(x, y, blockW, kBarHeight);
-    } else {
-        _iconView.frame = NSMakeRect((w - kIconSize) / 2.0, y, kIconSize, kIconSize);
-    }
+    CGFloat y = top - kIconSize;
+    _iconView.frame = NSMakeRect((w - kIconSize) / 2.0, y, kIconSize, kIconSize);
 
     y -= kMacieSpaceL + titleH;
     _titleLabel.frame = NSMakeRect(x, y, blockW, titleH);
@@ -97,51 +82,6 @@ static const CGFloat kSpinnerSize  = 28.0;
         _iconView.image = [NSImage imageWithSystemSymbolName:symbolName
                                    accessibilityDescription:title];
     }
-    // The two lead-in states are mutually exclusive, so leaving the previous one
-    // visible would stack a bar on top of a symbol.
-    [_progressBar stopAnimation:nil];
-    _progressBar.hidden = YES;
-    _iconView.hidden    = NO;
-    _showingProgress    = NO;
-
-    _titleLabel.stringValue    = title ?: @"";
-    _subtitleLabel.stringValue = subtitle ?: @"";
-    self.hidden = NO;
-    self.needsLayout = YES;
-}
-
-- (void)showProgressTitle:(NSString *)title
-                 subtitle:(NSString *)subtitle
-                 progress:(NSUInteger)completed
-                    total:(NSUInteger)total {
-    if (!_progressBar) {
-        _progressBar = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
-        _progressBar.minValue = 0.0;
-        [self addSubview:_progressBar];
-    }
-
-    BOOL determinate = (total > 0);
-    NSProgressIndicatorStyle wanted = determinate ? NSProgressIndicatorStyleBar
-                                                  : NSProgressIndicatorStyleSpinning;
-
-    // Reassigning the style restarts the animation, so only touch it on a real
-    // change — this method runs on every progress report.
-    if (!_showingProgress || _progressBar.style != wanted) {
-        [_progressBar stopAnimation:nil];
-        _progressBar.style        = wanted;
-        _progressBar.indeterminate = !determinate;
-        if (!determinate) [_progressBar startAnimation:nil];
-    }
-
-    if (determinate) {
-        _progressBar.maxValue    = (double)total;
-        _progressBar.doubleValue = (double)MIN(completed, total);
-    }
-
-    _iconView.hidden    = YES;
-    _progressBar.hidden = NO;
-    _showingProgress    = YES;
-
     _titleLabel.stringValue    = title ?: @"";
     _subtitleLabel.stringValue = subtitle ?: @"";
     self.hidden = NO;

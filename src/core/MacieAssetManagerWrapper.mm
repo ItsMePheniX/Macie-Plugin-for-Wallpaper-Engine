@@ -7,19 +7,9 @@
 
 #import "MacieAssetManagerWrapper.h"
 
-/// How many folders pass between progress reports. The bar moves a few pixels per
-/// wallpaper at most, so reporting every one just floods the main queue.
-static const size_t kProgressReportInterval = 16;
-
 @interface MacieAssetManagerWrapper () {
     std::unique_ptr<Macie::AssetManager> _assetManager;
 }
-
-/// Bumped by every -scanWallpaperEngineAsync: call. A scan whose generation is no
-/// longer current publishes nothing and reports nothing: changing the Steam folder
-/// twice in quick succession must not let the first scan's results land last.
-@property (assign, nonatomic) NSUInteger scanGeneration;
-
 @end
 
 @implementation MacieAssetManagerWrapper
@@ -36,53 +26,8 @@ static const size_t kProgressReportInterval = 16;
     return _assetManager.get();
 }
 
-- (void)scanWallpaperEngineAsync:(const std::string &)steamappsPath
-                        progress:(void (^)(NSUInteger scanned, NSUInteger total))progress
-                      completion:(void (^)(void))completion {
-    // Copied before dispatch: the caller's string does not have to outlive the scan.
-    std::string path = steamappsPath;
-
-    self.scanGeneration++;
-    const NSUInteger generation = self.scanGeneration;
-
-    // The scan is I/O bound and must not contend with the video renderer's work.
-    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
-
-    __weak MacieAssetManagerWrapper *weakSelf = self;
-    dispatch_async(queue, ^{
-        Macie::AssetManager::ScanProgressCallback onProgress = nullptr;
-        if (progress) {
-            onProgress = [progress, weakSelf, generation](size_t scanned, size_t total) {
-                // Folders can appear between the counting pass and the parsing pass,
-                // so clamp rather than letting the bar overshoot.
-                size_t shown = (total > 0 && scanned > total) ? total : scanned;
-                BOOL milestone = (shown % kProgressReportInterval == 0) || (shown == total);
-                if (!milestone) return;
-
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    MacieAssetManagerWrapper *strongSelf = weakSelf;
-                    if (!strongSelf || strongSelf.scanGeneration != generation) return;
-                    progress((NSUInteger)shown, (NSUInteger)total);
-                });
-            };
-        }
-
-        // Static and member-free, so nothing the main thread might be reading is
-        // touched here. The results are published on the main queue below.
-        std::vector<Macie::WallpaperProject> found =
-            Macie::AssetManager::scanWallpaperEngine(path, onProgress);
-
-        // __block so the vector can be moved into the main-queue block rather than
-        // copied — a large library is a lot of strings.
-        __block std::vector<Macie::WallpaperProject> results = std::move(found);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            MacieAssetManagerWrapper *strongSelf = weakSelf;
-            if (!strongSelf || strongSelf.scanGeneration != generation) return;
-
-            strongSelf.assetManager->adoptWallpapers(std::move(results));
-            if (completion) completion();
-        });
-    });
+- (std::vector<Macie::WallpaperProject>)scanWallpaperEngine:(const std::string &)steamappsPath {
+    return _assetManager->scanWallpaperEngine(steamappsPath);
 }
 
 - (std::vector<Macie::WallpaperProject>)getVideoWallpapers {

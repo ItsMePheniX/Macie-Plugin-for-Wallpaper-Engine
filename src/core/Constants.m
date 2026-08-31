@@ -19,7 +19,6 @@ NSString * const kWorkshopSubpath      = @"workshop/content/431960";
 NSString * const kDefaultsSteamappsPath     = @"steamappsPath";
 NSString * const kDefaultsLastMuteState     = @"lastMuteState";
 NSString * const kDefaultsLastWallpaperId   = @"lastWallpaperId";
-NSString * const kDefaultsLastWallpaperSnapshot = @"lastWallpaperSnapshot";
 NSString * const kDefaultsPauseOnBattery    = @"pauseOnBattery";
 NSString * const kDefaultsPauseOnFullscreen = @"pauseOnFullscreen";
 NSString * const kDefaultsFavoriteIds       = @"favoriteWallpaperIds";
