@@ -26,6 +26,9 @@ extern NSString * const kWorkshopSubpath;
 extern NSString * const kDefaultsSteamappsPath;
 extern NSString * const kDefaultsLastMuteState;
 extern NSString * const kDefaultsLastWallpaperId;
+/// A dictionary snapshot of the last-played wallpaper, held so that playback and
+/// the hero panel can be restored at launch without waiting for the library scan.
+extern NSString * const kDefaultsLastWallpaperSnapshot;
 extern NSString * const kDefaultsPauseOnBattery;
 extern NSString * const kDefaultsPauseOnFullscreen;
 extern NSString * const kDefaultsFavoriteIds;
