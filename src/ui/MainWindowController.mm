@@ -17,7 +17,6 @@
 #import "DesignSystem.h"
 #import "GalleryEmptyStateView.h"
 #import "HeroPanelView.h"
-#import "LastWallpaperSnapshot.h"
 #import "MacieAssetManagerWrapper.h"
 #import "SettingsSheetController.h"
 #import "SidebarView.h"
@@ -142,16 +141,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 @property (strong, nonatomic) NSString *activeCollectionName;
 /// Gallery sort order, persisted.
 @property (assign, nonatomic) MacieGallerySort sortOrder;
-/// YES between -beginScanProgress and -reloadFromAssetManager. An empty grid means
-/// something different while a scan is in flight, so -updateEmptyState checks this
-/// before anything else.
-@property (assign, nonatomic) BOOL scanning;
-/// YES once the scan has been running long enough to be worth mentioning. A scan
-/// that finishes in 80ms should not flash a progress panel.
-@property (assign, nonatomic) BOOL scanProgressVisible;
-/// Latest counts from the scan, replayed by -updateEmptyState.
-@property (assign, nonatomic) NSUInteger scanScanned;
-@property (assign, nonatomic) NSUInteger scanTotal;
 /// id → @{@"size": bytes, @"date": unix seconds}. Filled by the same background
 /// pass that computes the sidebar's on-disk figures, so the size and date sorts
 /// cost no additional file I/O.
@@ -202,21 +191,12 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
         _activeSection = MacieSidebarSectionLibrary;
         _fileStats     = @{};
         _sortOrder     = [self loadSortOrder];
-        // Read before the library exists: the hero has to be able to resolve the
-        // restored wallpaper as PLAYING while the scan is still running.
-        _playingWallpaperId = [[NSUserDefaults standardUserDefaults]
-            stringForKey:kDefaultsLastWallpaperId];
 
         [self setupWindow];
         [self loadVideos];
         [self setupFavoriteToggleObserver];
     }
     return self;
-}
-
-- (void)attachVideoRenderer:(AVVideoRenderer *)renderer {
-    self.videoRenderer = renderer;
-    [self updateMuteButton];
 }
 
 - (MacieGallerySort)loadSortOrder {
@@ -563,25 +543,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
         return;
     }
 
-    // A scan in flight is the one case where the grid is empty for a reason that has
-    // nothing to do with the section, the search or the library, so it comes first.
-    if (self.scanning) {
-        if (!self.scanProgressVisible) {
-            self.emptyState.hidden = YES;
-            return;
-        }
-        NSString *detail = self.scanTotal > 0
-            ? [NSString stringWithFormat:@"%lu of %lu folders read",
-               (unsigned long)MIN(self.scanScanned, self.scanTotal),
-               (unsigned long)self.scanTotal]
-            : @"Looking through the Workshop folder.";
-        [self.emptyState showProgressTitle:@"Reading your wallpaper library"
-                                 subtitle:detail
-                                 progress:self.scanScanned
-                                    total:self.scanTotal];
-        return;
-    }
-
     NSString *query = [self.searchField.stringValue
         stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
@@ -620,38 +581,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 
 // ---------------------------------------------------------------------------
 #pragma mark - Data Loading
-
-- (void)beginScanProgress {
-    self.scanning    = YES;
-    self.scanScanned = 0;
-    self.scanTotal   = 0;
-
-    // Deliberately quiet to start with: most libraries scan in a few hundred
-    // milliseconds, and a panel that appears and vanishes reads as a glitch.
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf || !strongSelf.scanning) return;
-        strongSelf.scanProgressVisible = YES;
-        [strongSelf updateEmptyState];
-    });
-
-    [self updateEmptyState];
-}
-
-- (void)updateScanProgress:(NSUInteger)scanned total:(NSUInteger)total {
-    if (!self.scanning) return;
-    self.scanScanned = scanned;
-    self.scanTotal   = total;
-    [self updateEmptyState];
-}
-
-- (void)reloadFromAssetManager {
-    self.scanning            = NO;
-    self.scanProgressVisible = NO;
-    [self loadVideos];
-}
 
 - (void)loadVideos {
     std::vector<Macie::WallpaperProject> wallpapers = [self.assetManager getVideoWallpapers];
@@ -706,15 +635,7 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
     [self applyCurrentFilter];
     [self updateSidebarBadges];
     [self updateStorageLabels];
-
-    NSDictionary *playing = [self videoForId:self.playingWallpaperId];
-    // Before the scan lands there is no library to look in, but the snapshot of the
-    // last-played wallpaper carries everything the hero needs. Only when the library
-    // is genuinely empty — otherwise an uninstalled wallpaper would come back from
-    // the dead after a scan that no longer lists it.
-    if (!playing && self.videos.count == 0) playing = MacieLoadLastWallpaperSnapshot();
-    [self showInHero:playing];
-
+    [self showInHero:[self videoForId:self.playingWallpaperId]];
     [self updateMuteButton];
 }
 
@@ -1240,9 +1161,6 @@ didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
     NSString *previousId = self.playingWallpaperId;
     self.playingWallpaperId = videoId;
     [[NSUserDefaults standardUserDefaults] setObject:videoId forKey:kDefaultsLastWallpaperId];
-    // Enough of this wallpaper to start it again at the next launch without waiting
-    // for the library scan to tell us where its video file is.
-    MacieSaveLastWallpaperSnapshot(video);
 
     // Recents: most-recent first, capped.
     [self.recentIds removeObject:videoId];
