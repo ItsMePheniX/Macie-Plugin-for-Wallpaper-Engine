@@ -45,13 +45,10 @@ set(SOURCES
 
     # Core
     src/core/Constants.m
-<<<<<<< HEAD
     src/core/MacieDisplayIdentity.m         # stable per-monitor keys and display names
     src/core/LastWallpaperSnapshot.m        # display key -> last-played wallpaper, restored before the scan
     src/core/WallpaperDisplay.m             # one screen: its desktop window and renderer
     src/core/WallpaperDisplayManager.m      # every screen, and what to do as they come and go
-=======
->>>>>>> origin/main
     src/core/AssetManager.mm               # Obj-C++: NSJSONSerialization behind a C++ API
     src/core/MacieAssetManagerWrapper.mm   # Typed Obj-C++ wrapper for AssetManager
     src/core/ThumbnailCache.mm
@@ -90,13 +87,10 @@ set(HEADERS
     include/WelcomeWindowController.h
     include/AppDelegate.h
     include/Constants.h
-<<<<<<< HEAD
     include/MacieDisplayIdentity.h
     include/LastWallpaperSnapshot.h
     include/WallpaperDisplay.h
     include/WallpaperDisplayManager.h
-=======
->>>>>>> origin/main
     include/ThumbnailCache.h
     include/WallpaperMetadataCache.h
     include/PerformanceMonitor.h

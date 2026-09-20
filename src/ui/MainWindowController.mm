@@ -150,6 +150,16 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 @property (strong, nonatomic) NSString *activeCollectionName;
 /// Gallery sort order, persisted.
 @property (assign, nonatomic) MacieGallerySort sortOrder;
+/// YES between -beginScanProgress and -reloadFromAssetManager. An empty grid means
+/// something different while a scan is in flight, so -updateEmptyState checks this
+/// before anything else.
+@property (assign, nonatomic) BOOL scanning;
+/// YES once the scan has been running long enough to be worth mentioning. A scan
+/// that finishes in 80ms should not flash a progress panel.
+@property (assign, nonatomic) BOOL scanProgressVisible;
+/// Latest counts from the scan, replayed by -updateEmptyState.
+@property (assign, nonatomic) NSUInteger scanScanned;
+@property (assign, nonatomic) NSUInteger scanTotal;
 /// id → @{@"size": bytes, @"date": unix seconds}. Filled by the same background
 /// pass that computes the sidebar's on-disk figures, so the size and date sorts
 /// cost no additional file I/O.
@@ -194,7 +204,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 
     self = [super initWithWindow:window];
     if (self) {
-<<<<<<< HEAD
         _assetManager   = assetManager;
         _displayManager = manager;
         _favoriteIds    = [self loadFavoriteIds];
@@ -206,15 +215,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
         // every attached display and what it is playing, so the hero can resolve the
         // restored wallpaper as PLAYING while the scan is still running.
         _currentTargetKey = [self restoredTargetKey];
-=======
-        _assetManager  = assetManager;
-        _videoRenderer = renderer;
-        _favoriteIds   = [self loadFavoriteIds];
-        _recentIds     = [self loadRecentIds];
-        _activeSection = MacieSidebarSectionLibrary;
-        _fileStats     = @{};
-        _sortOrder     = [self loadSortOrder];
->>>>>>> origin/main
 
         [self setupWindow];
         [self loadVideos];
@@ -223,7 +223,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
     return self;
 }
 
-<<<<<<< HEAD
 /// The display the user last targeted, if it is still attached. A monitor unplugged since
 /// the last session falls back to All Displays rather than to a picker entry that is not
 /// there — and the stored key is left alone, so plugging it back in restores the choice.
@@ -238,8 +237,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
     return [self.displayManager wallpaperIdForDisplayKey:self.currentTargetKey];
 }
 
-=======
->>>>>>> origin/main
 - (MacieGallerySort)loadSortOrder {
     NSInteger saved = [[NSUserDefaults standardUserDefaults] integerForKey:kDefaultsGallerySortOrder];
     if (saved < MacieGallerySortTitleAscending || saved > MacieGallerySortLargestFirst) {
@@ -702,6 +699,25 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
         return;
     }
 
+    // A scan in flight is the one case where the grid is empty for a reason that has
+    // nothing to do with the section, the search or the library, so it comes first.
+    if (self.scanning) {
+        if (!self.scanProgressVisible) {
+            self.emptyState.hidden = YES;
+            return;
+        }
+        NSString *detail = self.scanTotal > 0
+            ? [NSString stringWithFormat:@"%lu of %lu folders read",
+               (unsigned long)MIN(self.scanScanned, self.scanTotal),
+               (unsigned long)self.scanTotal]
+            : @"Looking through the Workshop folder.";
+        [self.emptyState showProgressTitle:@"Reading your wallpaper library"
+                                 subtitle:detail
+                                 progress:self.scanScanned
+                                    total:self.scanTotal];
+        return;
+    }
+
     NSString *query = [self.searchField.stringValue
         stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
@@ -741,6 +757,38 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 // ---------------------------------------------------------------------------
 #pragma mark - Data Loading
 
+- (void)beginScanProgress {
+    self.scanning    = YES;
+    self.scanScanned = 0;
+    self.scanTotal   = 0;
+
+    // Deliberately quiet to start with: most libraries scan in a few hundred
+    // milliseconds, and a panel that appears and vanishes reads as a glitch.
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.scanning) return;
+        strongSelf.scanProgressVisible = YES;
+        [strongSelf updateEmptyState];
+    });
+
+    [self updateEmptyState];
+}
+
+- (void)updateScanProgress:(NSUInteger)scanned total:(NSUInteger)total {
+    if (!self.scanning) return;
+    self.scanScanned = scanned;
+    self.scanTotal   = total;
+    [self updateEmptyState];
+}
+
+- (void)reloadFromAssetManager {
+    self.scanning            = NO;
+    self.scanProgressVisible = NO;
+    [self loadVideos];
+}
+
 - (void)loadVideos {
     // The library arrives as dictionaries: the wrapper is the one place a WallpaperProject
     // becomes an Objective-C object, and the display manager needs the same shape. What is
@@ -779,7 +827,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
     [self applyCurrentFilter];
     [self updateSidebarBadges];
     [self updateStorageLabels];
-<<<<<<< HEAD
 
     NSDictionary *playing = [self videoForId:self.playingWallpaperId];
     // Before the scan lands there is no library to look in, but what the manager restored
@@ -791,9 +838,6 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
     }
     [self showInHero:playing];
 
-=======
-    [self showInHero:[self videoForId:self.playingWallpaperId]];
->>>>>>> origin/main
     [self updateMuteButton];
 }
 
@@ -1324,13 +1368,6 @@ didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
         return NO;
     }
 
-<<<<<<< HEAD
-=======
-    NSString *previousId = self.playingWallpaperId;
-    self.playingWallpaperId = videoId;
-    [[NSUserDefaults standardUserDefaults] setObject:videoId forKey:kDefaultsLastWallpaperId];
-
->>>>>>> origin/main
     // Recents: most-recent first, capped.
     [self.recentIds removeObject:videoId];
     [self.recentIds insertObject:videoId atIndex:0];
