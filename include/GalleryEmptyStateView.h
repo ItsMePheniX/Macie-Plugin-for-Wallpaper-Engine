@@ -21,6 +21,14 @@
              title:(NSString *)title
           subtitle:(NSString *)subtitle;
 
+/// Shows a progress-style state with an activity spinner instead of a symbol.
+/// Pass `progress` = 0 and `total` = 0 before the scan knows how many folders;
+/// once it does the subtitle reads "X of Y folders read".
+- (void)showProgressTitle:(NSString *)title
+                 subtitle:(NSString *)subtitle
+                 progress:(NSUInteger)progress
+                    total:(NSUInteger)total;
+
 @end
 
 #endif /* GalleryEmptyStateView_h */

@@ -37,6 +37,13 @@ NS_ASSUME_NONNULL_BEGIN
 /// Returns an empty optional if no wallpaper with that ID was found in the last scan.
 - (std::optional<Macie::WallpaperProject>)getWallpaperById:(const std::string &)wallpaperId;
 
+/// Asynchronously scan a steamapps directory.
+/// `progress` is called on the main queue as folders are processed (scanned, total).
+/// `completion` is called on the main queue when the scan finishes.
+- (void)scanWallpaperEngineAsync:(const std::string &)steamappsPath
+                        progress:(void (^)(NSUInteger scanned, NSUInteger total))progress
+                      completion:(void (^)(void))completion;
+
 @end
 
 NS_ASSUME_NONNULL_END
