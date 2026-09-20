@@ -6,8 +6,8 @@
 //
 
 #import <Cocoa/Cocoa.h>
-#import "AVVideoRenderer.h"
 #import "PerformanceMonitor.h"
+#import "WallpaperDisplayManager.h"
 
 // Forward declaration — keeps C++ headers out of pure .m compilation units.
 // AppDelegate.mm imports the full header directly.
@@ -17,8 +17,9 @@
 
 @interface AppDelegate : NSObject <NSApplicationDelegate, PerformanceMonitorDelegate>
 
-@property (strong, nonatomic) NSWindow *desktopWindow;
-@property (strong, nonatomic) AVVideoRenderer *videoRenderer;
+/// Every attached display's wallpaper. Replaces the single desktop window and renderer
+/// this class used to own, along with the screen-parameters observer that went with them.
+@property (strong, nonatomic) WallpaperDisplayManager *displayManager;
 @property (strong, nonatomic) MainWindowController *galleryController;
 /// Held strongly for the duration of first-launch setup: NSWindow.windowController
 /// is a weak reference, so nothing else keeps this alive while it is on screen.

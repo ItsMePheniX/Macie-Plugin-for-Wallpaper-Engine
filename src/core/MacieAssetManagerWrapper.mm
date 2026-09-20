@@ -34,6 +34,38 @@
     return _assetManager->getVideoWallpapers();
 }
 
+- (NSArray<NSDictionary *> *)videoWallpaperDictionaries {
+    std::vector<Macie::WallpaperProject> wallpapers = _assetManager->getVideoWallpapers();
+
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray arrayWithCapacity:wallpapers.size()];
+    for (const auto &w : wallpapers) {
+        // stringWithUTF8String: returns nil on malformed bytes, and a nil value in a
+        // dictionary literal is fatal — so each one is defaulted.
+        NSString *wallpaperId = [NSString stringWithUTF8String:w.id.c_str()]            ?: @"";
+        NSString *title       = [NSString stringWithUTF8String:w.title.c_str()]         ?: @"";
+        NSString *path        = [NSString stringWithUTF8String:w.videoFilePath.c_str()] ?: @"";
+        NSString *preview     = [NSString stringWithUTF8String:w.previewPath.c_str()]   ?: @"";
+        NSString *description = [NSString stringWithUTF8String:w.description.c_str()]   ?: @"";
+
+        NSMutableArray<NSString *> *tags = [NSMutableArray arrayWithCapacity:w.tags.size()];
+        for (const auto &t : w.tags) {
+            NSString *tag = [NSString stringWithUTF8String:t.c_str()];
+            if (tag.length) [tags addObject:tag];
+        }
+
+        [result addObject:@{
+            @"id":          wallpaperId,
+            @"title":       title,
+            @"path":        path,
+            @"preview":     preview,
+            @"description": description,
+            @"tags":        [tags copy]
+        }];
+    }
+
+    return [result copy];
+}
+
 - (std::optional<Macie::WallpaperProject>)getWallpaperById:(const std::string &)wallpaperId {
     return _assetManager->getWallpaperById(wallpaperId);
 }

@@ -39,6 +39,14 @@
 /// Shows the "nothing playing" state.
 - (void)showEmpty;
 
+/// Names the display the panel is talking about, and says whether the rest of them are
+/// showing something else. Persists across -showWallpaper: and -showEmpty, because it is a
+/// fact about the displays rather than about any one wallpaper.
+///
+/// A nil `name` with `differ` NO hides the line, which is the single-display case: there is
+/// no other display for PLAYING to be ambiguous about.
+- (void)setDisplayContextName:(NSString *)name othersDiffer:(BOOL)differ;
+
 /// Recolours the heart without rebuilding anything else.
 - (void)setFavorite:(BOOL)favorite;
 
