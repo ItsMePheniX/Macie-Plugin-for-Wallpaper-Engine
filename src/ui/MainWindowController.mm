@@ -12,19 +12,17 @@
 //
 
 #import "MainWindowController.h"
-#import "AVVideoRenderer.h"
 #import "Constants.h"
 #import "DesignSystem.h"
 #import "GalleryEmptyStateView.h"
 #import "HeroPanelView.h"
-#import "LastWallpaperSnapshot.h"
 #import "MacieAssetManagerWrapper.h"
 #import "SettingsSheetController.h"
 #import "SidebarView.h"
 #import "ThumbnailCache.h"
 #import "VideoCollectionItem.h"
+#import "WallpaperDisplayManager.h"
 #import "WallpaperMetadataCache.h"
-#import <vector>
 
 // ---------------------------------------------------------------------------
 #pragma mark - Constants
@@ -34,6 +32,10 @@ static const NSUInteger kMaxRecentWallpapers = 20;
 
 /// Width of the gallery header's sort control.
 static const CGFloat kSortControlWidth = 156.0;
+
+/// Width of the toolbar's display-target control. Wider than the sort control because
+/// it holds monitor names, which are longer than "Recently Added".
+static const CGFloat kTargetControlWidth = 190.0;
 
 /// Gallery sort orders, persisted so the choice survives a relaunch.
 ///
@@ -121,9 +123,13 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 >
 
 // Core
-@property (strong, nonatomic) AVVideoRenderer          *videoRenderer;
+@property (strong, nonatomic) WallpaperDisplayManager  *displayManager;
 @property (strong, nonatomic) MacieAssetManagerWrapper *assetManager;
 @property (strong, nonatomic) SettingsSheetController  *settingsController;
+
+/// Which display everything in this window acts on. nil means all of them — the picker's
+/// first entry, and the only possible answer while a single display is attached.
+@property (copy, nonatomic, nullable) NSString *currentTargetKey;
 
 // Data
 /// Full unfiltered list — never mutated after -loadVideos.
@@ -134,8 +140,10 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 @property (strong, nonatomic) NSMutableSet<NSString *> *favoriteIds;
 /// IDs of recently played wallpapers (most-recent first, capped).
 @property (strong, nonatomic) NSMutableArray<NSString *> *recentIds;
-/// ID of the wallpaper currently playing on the desktop.
-@property (strong, nonatomic) NSString *playingWallpaperId;
+/// ID of the wallpaper playing on the current target. Derived, not stored: the display
+/// manager is the only record of what is on which display, and a second copy here would be
+/// wrong the moment the target changes or a monitor is unplugged.
+@property (strong, nonatomic, readonly, nullable) NSString *playingWallpaperId;
 /// Active sidebar section (drives filteredVideos).
 @property (assign, nonatomic) MacieSidebarSection activeSection;
 /// Active collection name when activeSection >= MacieSidebarSectionCollection.
@@ -161,6 +169,7 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 @property (strong, nonatomic) SidebarView         *sidebar;
 @property (strong, nonatomic) NSView              *contentArea;
 @property (strong, nonatomic) NSSearchField       *searchField;
+@property (strong, nonatomic) NSPopUpButton       *targetPopup;
 @property (strong, nonatomic) NSButton            *muteToolbarButton;
 
 // Hero
@@ -182,7 +191,7 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 #pragma mark - Init
 
 - (instancetype)initWithAssetManager:(MacieAssetManagerWrapper *)assetManager
-                       videoRenderer:(AVVideoRenderer *)renderer {
+                      displayManager:(WallpaperDisplayManager *)manager {
     NSWindow *window = [[NSWindow alloc]
         initWithContentRect:NSMakeRect(100, 100, kMainWindowWidth, kMainWindowHeight)
                   styleMask:(NSWindowStyleMaskTitled |
@@ -195,17 +204,17 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 
     self = [super initWithWindow:window];
     if (self) {
-        _assetManager  = assetManager;
-        _videoRenderer = renderer;
-        _favoriteIds   = [self loadFavoriteIds];
-        _recentIds     = [self loadRecentIds];
-        _activeSection = MacieSidebarSectionLibrary;
-        _fileStats     = @{};
-        _sortOrder     = [self loadSortOrder];
-        // Read before the library exists: the hero has to be able to resolve the
+        _assetManager   = assetManager;
+        _displayManager = manager;
+        _favoriteIds    = [self loadFavoriteIds];
+        _recentIds      = [self loadRecentIds];
+        _activeSection  = MacieSidebarSectionLibrary;
+        _fileStats      = @{};
+        _sortOrder      = [self loadSortOrder];
+        // Before -setupWindow, which builds the picker from it. The manager already knows
+        // every attached display and what it is playing, so the hero can resolve the
         // restored wallpaper as PLAYING while the scan is still running.
-        _playingWallpaperId = [[NSUserDefaults standardUserDefaults]
-            stringForKey:kDefaultsLastWallpaperId];
+        _currentTargetKey = [self restoredTargetKey];
 
         [self setupWindow];
         [self loadVideos];
@@ -214,9 +223,18 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
     return self;
 }
 
-- (void)attachVideoRenderer:(AVVideoRenderer *)renderer {
-    self.videoRenderer = renderer;
-    [self updateMuteButton];
+/// The display the user last targeted, if it is still attached. A monitor unplugged since
+/// the last session falls back to All Displays rather than to a picker entry that is not
+/// there — and the stored key is left alone, so plugging it back in restores the choice.
+- (NSString *)restoredTargetKey {
+    NSString *stored = [[NSUserDefaults standardUserDefaults]
+        stringForKey:kDefaultsWallpaperTarget];
+    if (!stored.length) return nil;
+    return [self.displayManager nameForDisplayKey:stored] ? stored : nil;
+}
+
+- (NSString *)playingWallpaperId {
+    return [self.displayManager wallpaperIdForDisplayKey:self.currentTargetKey];
 }
 
 - (MacieGallerySort)loadSortOrder {
@@ -377,7 +395,100 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
         [toolbar addSubview:btn];
     }
 
+    // Left of the icon buttons, so the row reads target-then-actions. Hidden with a single
+    // display — see -refreshTargetPopup — but built either way, because a monitor plugged
+    // in later must not need the toolbar rebuilding.
+    CGFloat trailingWidth = (CGFloat)symbols.count * kMacieControlHeight
+                          + (CGFloat)(symbols.count - 1) * kMacieSpaceS;
+    self.targetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(
+        cw - kMacieContentInset - trailingWidth - kMacieSpaceM - kTargetControlWidth,
+        (kToolbarHeight - kMacieControlHeight) / 2.0,
+        kTargetControlWidth, kMacieControlHeight) pullsDown:NO];
+    self.targetPopup.font   = MacieFontBody();
+    self.targetPopup.target = self;
+    self.targetPopup.action = @selector(targetChanged:);
+    self.targetPopup.autoresizingMask = NSViewMinXMargin;
+    self.targetPopup.toolTip = @"Choose which display the gallery applies wallpapers to";
+    [toolbar addSubview:self.targetPopup];
+    [self refreshTargetPopup];
+
     [self.contentArea addSubview:toolbar];
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Display target
+
+/// Rebuilds the picker from the attached displays. Called at build time and again from
+/// -displaysChanged, so its contents can never name a monitor that is not there.
+- (void)refreshTargetPopup {
+    if (!self.targetPopup) return;
+
+    NSArray<NSString *> *keys = self.displayManager.displayKeys;
+
+    // One display means every choice does the same thing, and a control that cannot change
+    // anything is just clutter. The target stays nil in that case, which is what makes
+    // -applyWallpaper: keep working unchanged on a single-display Mac.
+    self.targetPopup.hidden = (keys.count < 2);
+
+    [self.targetPopup removeAllItems];
+
+    // Items are added through the menu rather than -addItemWithTitle:, which silently
+    // replaces an existing item of the same name — two identical monitors would collapse
+    // into one entry if their names had not been disambiguated first.
+    [self.targetPopup.menu addItem:[[NSMenuItem alloc] initWithTitle:@"All Displays"
+                                                             action:NULL
+                                                      keyEquivalent:@""]];
+    for (NSString *key in keys) {
+        NSMenuItem *item = [[NSMenuItem alloc]
+            initWithTitle:([self.displayManager nameForDisplayKey:key] ?: key)
+                   action:NULL
+            keyEquivalent:@""];
+        item.representedObject = key;
+        [self.targetPopup.menu addItem:item];
+    }
+
+    NSUInteger index = self.currentTargetKey ? [keys indexOfObject:self.currentTargetKey]
+                                            : NSNotFound;
+    [self.targetPopup selectItemAtIndex:(index == NSNotFound ? 0 : (NSInteger)index + 1)];
+}
+
+- (void)targetChanged:(id)sender {
+    NSString *key = self.targetPopup.selectedItem.representedObject;
+    if (key == self.currentTargetKey || [key isEqualToString:self.currentTargetKey]) return;
+
+    NSString *previousPlayingId = self.playingWallpaperId;
+    self.currentTargetKey = key;
+
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (key.length) [defaults setObject:key forKey:kDefaultsWallpaperTarget];
+    else            [defaults removeObjectForKey:kDefaultsWallpaperTarget];
+
+    [self retargetedFromWallpaperId:previousPlayingId];
+}
+
+- (void)displaysChanged {
+    NSString *previousPlayingId = self.playingWallpaperId;
+
+    // The targeted display may be the one that was just unplugged, in which case the
+    // remembered key is kept but the selection falls back to All Displays.
+    if (self.currentTargetKey && ![self.displayManager nameForDisplayKey:self.currentTargetKey]) {
+        self.currentTargetKey = nil;
+    }
+
+    [self refreshTargetPopup];
+    [self retargetedFromWallpaperId:previousPlayingId];
+}
+
+/// PLAYING is a fact about one display, so pointing this window at a different one changes
+/// which card is marked and what the hero shows. Two cards at most, rather than a reload
+/// that would throw away the scroll position and the focus ring.
+- (void)retargetedFromWallpaperId:(NSString *)previousPlayingId {
+    NSDictionary *playing = [self videoForId:self.playingWallpaperId]
+        ?: [self.displayManager wallpaperForDisplayKey:self.currentTargetKey];
+
+    [self showInHero:playing];
+    [self refreshItemForWallpaperId:previousPlayingId];
+    [self refreshItemForWallpaperId:self.playingWallpaperId];
 }
 
 // ---------------------------------------------------------------------------
@@ -410,12 +521,37 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 /// playing one or a preview. Every hero update goes through here so the panel's
 /// PLAYING/PREVIEW state cannot drift from what is actually on the desktop.
 - (void)showInHero:(NSDictionary *)video {
+    [self updateHeroDisplayContext];
+
     if (!video) { [self.heroPanel showEmpty]; return; }
 
     NSString *wallpaperId = video[@"id"];
     [self.heroPanel showWallpaper:video
                         isPreview:![wallpaperId isEqualToString:self.playingWallpaperId]
                        isFavorite:[self.favoriteIds containsObject:wallpaperId]];
+}
+
+/// PLAYING says nothing about *where* while more than one desktop exists, so the hero is
+/// told which display it is describing and whether the rest of them agree.
+- (void)updateHeroDisplayContext {
+    if (self.displayManager.displayKeys.count < 2) {
+        [self.heroPanel setDisplayContextName:nil othersDiffer:NO];
+        return;
+    }
+
+    BOOL differ = [self.displayManager assignmentsDiffer];
+
+    // With All Displays selected the hero shows the primary's wallpaper, so it is named
+    // rather than claimed for every display — unless they really are all the same, which is
+    // the one case where "All Displays" is the truthful label.
+    NSString *name = @"All Displays";
+    if (self.currentTargetKey) {
+        name = [self.displayManager nameForDisplayKey:self.currentTargetKey] ?: @"";
+    } else if (differ) {
+        name = [self.displayManager nameForDisplayKey:self.displayManager.primaryDisplayKey] ?: @"";
+    }
+
+    [self.heroPanel setDisplayContextName:name othersDiffer:differ];
 }
 
 /// Returns the hero to the wallpaper that is actually playing. Escape does this.
@@ -654,40 +790,28 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
 }
 
 - (void)loadVideos {
-    std::vector<Macie::WallpaperProject> wallpapers = [self.assetManager getVideoWallpapers];
+    // The library arrives as dictionaries: the wrapper is the one place a WallpaperProject
+    // becomes an Objective-C object, and the display manager needs the same shape. What is
+    // added here is only what the gallery itself needs.
+    NSArray<NSDictionary *> *wallpapers = [self.assetManager videoWallpaperDictionaries];
 
-    NSMutableArray<NSDictionary *> *loaded = [NSMutableArray arrayWithCapacity:wallpapers.size()];
-    for (const auto &w : wallpapers) {
-        // stringWithUTF8String: returns nil on malformed bytes, and a nil value in
-        // a dictionary literal is fatal — so each one is defaulted.
-        NSString *wallpaperId = [NSString stringWithUTF8String:w.id.c_str()]            ?: @"";
-        NSString *title       = [NSString stringWithUTF8String:w.title.c_str()]         ?: @"";
-        NSString *path        = [NSString stringWithUTF8String:w.videoFilePath.c_str()] ?: @"";
-        NSString *preview     = [NSString stringWithUTF8String:w.previewPath.c_str()]   ?: @"";
-        NSString *description = [NSString stringWithUTF8String:w.description.c_str()]   ?: @"";
-
-        NSMutableArray<NSString *> *tags = [NSMutableArray arrayWithCapacity:w.tags.size()];
-        for (const auto &t : w.tags) {
-            NSString *tag = [NSString stringWithUTF8String:t.c_str()];
-            if (tag.length) [tags addObject:tag];
-        }
-        NSString *tagText = [tags componentsJoinedByString:@" "];
+    NSMutableArray<NSDictionary *> *loaded = [NSMutableArray arrayWithCapacity:wallpapers.count];
+    for (NSDictionary *wallpaper in wallpapers) {
+        NSString *title       = wallpaper[@"title"];
+        NSString *description = wallpaper[@"description"];
+        NSString *tagText     = [wallpaper[@"tags"] componentsJoinedByString:@" "];
 
         // Search runs on every keystroke and collection matching on every section
         // change, so both haystacks are lowercased once here instead of per pass.
         //
         // categoryText excludes the description on purpose: matching prose would
         // file everything whose blurb mentions "city" under Cyberpunk.
-        [loaded addObject:@{
-            @"id":           wallpaperId,
-            @"title":        title,
-            @"path":         path,
-            @"preview":      preview,
-            @"description":  description,
-            @"tags":         [tags copy],
-            @"searchText":   [[NSString stringWithFormat:@"%@ %@ %@", title, description, tagText] lowercaseString],
-            @"categoryText": [[NSString stringWithFormat:@"%@ %@", title, tagText] lowercaseString]
-        }];
+        NSMutableDictionary *entry = [wallpaper mutableCopy];
+        entry[@"searchText"]   = [[NSString stringWithFormat:@"%@ %@ %@",
+                                   title, description, tagText] lowercaseString];
+        entry[@"categoryText"] = [[NSString stringWithFormat:@"%@ %@",
+                                   title, tagText] lowercaseString];
+        [loaded addObject:[entry copy]];
     }
 
     self.videos    = [loaded copy];
@@ -700,19 +824,18 @@ typedef NS_ENUM(NSInteger, MacieGalleryKey) {
     self.searchField.stringValue = @"";
     [self.sidebar setSelectedSection:MacieSidebarSectionLibrary];
 
-    self.playingWallpaperId = [[NSUserDefaults standardUserDefaults]
-        stringForKey:kDefaultsLastWallpaperId];
-
     [self applyCurrentFilter];
     [self updateSidebarBadges];
     [self updateStorageLabels];
 
     NSDictionary *playing = [self videoForId:self.playingWallpaperId];
-    // Before the scan lands there is no library to look in, but the snapshot of the
-    // last-played wallpaper carries everything the hero needs. Only when the library
-    // is genuinely empty — otherwise an uninstalled wallpaper would come back from
+    // Before the scan lands there is no library to look in, but what the manager restored
+    // from the last session's snapshot carries everything the hero needs. Only when the
+    // library is genuinely empty — otherwise an uninstalled wallpaper would come back from
     // the dead after a scan that no longer lists it.
-    if (!playing && self.videos.count == 0) playing = MacieLoadLastWallpaperSnapshot();
+    if (!playing && self.videos.count == 0) {
+        playing = [self.displayManager wallpaperForDisplayKey:self.currentTargetKey];
+    }
     [self showInHero:playing];
 
     [self updateMuteButton];
@@ -1226,23 +1349,24 @@ didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
 /// gallery click, Return, the context menu, Random, Next/Prev, the hero's Apply —
 /// routes through here so persistence, recents, the hero panel and the mute button
 /// can never diverge.
+///
+/// Where it lands is whatever the toolbar's target says: one display, or all of them.
 - (BOOL)applyWallpaper:(NSDictionary *)video {
     NSString *videoPath = video[@"path"];
     NSString *videoId   = video[@"id"];
     if (!videoPath.length || !videoId.length) return NO;
 
-    if (![self.videoRenderer loadAndPlayVideo:videoPath]) {
+    // Read before the apply, because playingWallpaperId is a live query on the manager
+    // rather than a stored value — afterwards it is already the new wallpaper.
+    NSString *previousId = self.playingWallpaperId;
+
+    // The manager persists each display's assignment itself, so nothing about which
+    // wallpaper is where is written from here.
+    if (![self.displayManager applyWallpaper:video toDisplayKey:self.currentTargetKey]) {
         NSLog(@"MainWindowController: failed to apply wallpaper %@", videoId);
         [self presentApplyFailureForTitle:video[@"title"]];
         return NO;
     }
-
-    NSString *previousId = self.playingWallpaperId;
-    self.playingWallpaperId = videoId;
-    [[NSUserDefaults standardUserDefaults] setObject:videoId forKey:kDefaultsLastWallpaperId];
-    // Enough of this wallpaper to start it again at the next launch without waiting
-    // for the library scan to tell us where its video file is.
-    MacieSaveLastWallpaperSnapshot(video);
 
     // Recents: most-recent first, capped.
     [self.recentIds removeObject:videoId];
@@ -1250,9 +1374,9 @@ didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
     while (self.recentIds.count > kMaxRecentWallpapers) [self.recentIds removeLastObject];
     [self saveRecentIds];
 
-    // The renderer carries mute state across loads, so only the button needs
-    // bringing back in sync. playingWallpaperId is already the new one, so the hero
-    // resolves this as PLAYING rather than PREVIEW.
+    // Every renderer carries mute state across loads, so only the button needs bringing
+    // back in sync. The target is already showing this wallpaper, so the hero resolves it
+    // as PLAYING rather than PREVIEW.
     [self showInHero:video];
     [self updateMuteButton];
     [self updateSidebarBadges];
@@ -1329,18 +1453,16 @@ didSelectItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths {
 }
 
 - (void)toolbarToggleMute:(id)sender {
-    if (self.videoRenderer.muted) [self.videoRenderer unmute];
-    else                          [self.videoRenderer mute];
-
-    [[NSUserDefaults standardUserDefaults] setBool:self.videoRenderer.muted
-                                            forKey:kDefaultsLastMuteState];
+    // One setting for the machine, not one per display: only the primary display's
+    // wallpaper has audio. The manager persists the choice.
+    [self.displayManager setMuted:!self.displayManager.muted];
     [self updateMuteButton];
 }
 
 - (void)updateMuteButton {
     if (!self.muteToolbarButton) return;
 
-    BOOL muted = self.videoRenderer.muted;
+    BOOL muted = self.displayManager.muted;
     if (@available(macOS 11.0, *)) {
         NSString *symbol = muted ? @"speaker.slash.fill" : @"speaker.wave.2";
         [self.muteToolbarButton setImage:[NSImage imageWithSystemSymbolName:symbol

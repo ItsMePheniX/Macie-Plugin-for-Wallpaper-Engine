@@ -33,6 +33,9 @@ find_library(IMAGEIO_LIBRARY ImageIO REQUIRED)
 # UniformTypeIdentifiers supplies UTTypePNG, used by ThumbnailCache to write PNGs
 # without the deprecated kUTTypePNG constant.
 find_library(UNIFORMTYPEIDENTIFIERS_LIBRARY UniformTypeIdentifiers REQUIRED)
+# ColorSync supplies CGDisplayCreateUUIDFromDisplayID, which is how a monitor is
+# identified across reconnects — CGDirectDisplayIDs are reassigned and cannot be stored.
+find_library(COLORSYNC_LIBRARY ColorSync REQUIRED)
 
 # Source files
 set(SOURCES
@@ -42,7 +45,10 @@ set(SOURCES
 
     # Core
     src/core/Constants.m
-    src/core/LastWallpaperSnapshot.m        # last-played wallpaper, restored before the scan
+    src/core/MacieDisplayIdentity.m         # stable per-monitor keys and display names
+    src/core/LastWallpaperSnapshot.m        # display key -> last-played wallpaper, restored before the scan
+    src/core/WallpaperDisplay.m             # one screen: its desktop window and renderer
+    src/core/WallpaperDisplayManager.m      # every screen, and what to do as they come and go
     src/core/AssetManager.mm               # Obj-C++: NSJSONSerialization behind a C++ API
     src/core/MacieAssetManagerWrapper.mm   # Typed Obj-C++ wrapper for AssetManager
     src/core/ThumbnailCache.mm
@@ -81,7 +87,10 @@ set(HEADERS
     include/WelcomeWindowController.h
     include/AppDelegate.h
     include/Constants.h
+    include/MacieDisplayIdentity.h
     include/LastWallpaperSnapshot.h
+    include/WallpaperDisplay.h
+    include/WallpaperDisplayManager.h
     include/ThumbnailCache.h
     include/WallpaperMetadataCache.h
     include/PerformanceMonitor.h
@@ -102,6 +111,7 @@ target_link_libraries(${PROJECT_NAME}
     ${SERVICEMANAGEMENT_LIBRARY}
     ${IMAGEIO_LIBRARY}
     ${UNIFORMTYPEIDENTIFIERS_LIBRARY}
+    ${COLORSYNC_LIBRARY}
 )
 
 # Include directories

@@ -6,13 +6,14 @@
 //
 
 #import "PerformanceMonitor.h"
+#import "MacieDisplayIdentity.h"
 #import "Constants.h"
 #import <IOKit/ps/IOPowerSources.h>
 #import <IOKit/ps/IOPSKeys.h>
 
 @interface PerformanceMonitor ()
 @property (nonatomic, assign) BOOL isOnBattery;
-@property (nonatomic, assign) BOOL isFrontmostAppFullscreen;
+@property (nonatomic, copy) NSSet<NSNumber *> *coveredDisplayIDs;
 @property (nonatomic, strong) id powerSourceObserver;
 @property (nonatomic, assign) CFRunLoopSourceRef powerRunLoopSource;
 @property (nonatomic, assign) BOOL isMonitoring;
@@ -35,7 +36,7 @@ static void PowerSourceCallback(void *context) {
         _pauseOnBattery = [defaults boolForKey:kDefaultsPauseOnBattery];
         _pauseOnFullscreen = [defaults boolForKey:kDefaultsPauseOnFullscreen];
         _isOnBattery = NO;
-        _isFrontmostAppFullscreen = NO;
+        _coveredDisplayIDs = [NSSet set];
         _isMonitoring = NO;
     }
     return self;
@@ -134,89 +135,113 @@ static void PowerSourceCallback(void *context) {
 }
 
 - (void)checkFullscreenState {
-    BOOL wasFullscreen = self.isFrontmostAppFullscreen;
-    self.isFrontmostAppFullscreen = [self detectFullscreenApp];
-    
-    if (wasFullscreen != self.isFrontmostAppFullscreen) {
+    NSSet<NSNumber *> *previous = self.coveredDisplayIDs;
+    self.coveredDisplayIDs = [self detectCoveredDisplayIDs];
+
+    if (![previous isEqualToSet:self.coveredDisplayIDs]) {
         [self evaluatePlaybackState];
     }
 }
 
-- (BOOL)detectFullscreenApp {
+/// CoreGraphics window bounds and NSScreen frames do not share a coordinate space:
+/// kCGWindowBounds has its origin at the top-left of the primary display and grows
+/// downwards, while NSScreen.frame grows upwards from the bottom-left. Comparing sizes
+/// alone sidesteps the flip but cannot say *which* screen a window covers, and attributing
+/// one to a screen needs positions — so the screen is converted into CG's space.
+static CGRect CGFrameForScreen(NSScreen *screen, CGFloat primaryHeight) {
+    NSRect frame = screen.frame;
+    return CGRectMake(frame.origin.x,
+                      primaryHeight - frame.origin.y - frame.size.height,
+                      frame.size.width,
+                      frame.size.height);
+}
+
+- (NSSet<NSNumber *> *)detectCoveredDisplayIDs {
+    // Walking every on-screen window is the expensive part of this class, and it runs on
+    // every app activation. With the setting off nobody can act on the answer.
+    if (!self.pauseOnFullscreen) return [NSSet set];
+
     NSRunningApplication *frontmostApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
-    if (!frontmostApp) return NO;
-    
+    if (!frontmostApp) return [NSSet set];
+
     // Don't consider our own app as fullscreen
     if ([frontmostApp.bundleIdentifier isEqualToString:[[NSBundle mainBundle] bundleIdentifier]]) {
-        return NO;
+        return [NSSet set];
     }
-    
-    // Check if frontmost app has fullscreen windows
-    pid_t pid = frontmostApp.processIdentifier;
-    
+
+    NSArray<NSScreen *> *screens = [NSScreen screens];
+    if (!screens.count) return [NSSet set];
+
     CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
-    if (!windowList) return NO;
-    
-    BOOL isFullscreen = NO;
-    NSScreen *mainScreen = [NSScreen mainScreen];
-    NSRect screenFrame = mainScreen.frame;
-    
+    if (!windowList) return [NSSet set];
+
+    // screens[0] is the zero screen, whose origin is (0,0) in both spaces, so its height is
+    // the one that defines the flip.
+    const CGFloat primaryHeight = screens.firstObject.frame.size.height;
+    const CGFloat tolerance = 10.0;
+    pid_t pid = frontmostApp.processIdentifier;
+
+    NSMutableSet<NSNumber *> *covered = [NSMutableSet set];
+
     CFIndex count = CFArrayGetCount(windowList);
     for (CFIndex i = 0; i < count; i++) {
         NSDictionary *windowInfo = (__bridge NSDictionary *)CFArrayGetValueAtIndex(windowList, i);
-        
+
         NSNumber *windowPID = windowInfo[(NSString *)kCGWindowOwnerPID];
         if (windowPID.intValue != pid) continue;
-        
+
         NSNumber *windowLayer = windowInfo[(NSString *)kCGWindowLayer];
         if (windowLayer.intValue != 0) continue; // Only check normal windows
-        
-        // Get window bounds
-        CGRect bounds;
+
         NSDictionary *boundsDict = windowInfo[(NSString *)kCGWindowBounds];
-        if (boundsDict) {
-            CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)boundsDict, &bounds);
-            
-            // Check if window covers the entire screen (with some tolerance)
-            CGFloat tolerance = 10.0;
-            if (bounds.size.width >= screenFrame.size.width - tolerance &&
-                bounds.size.height >= screenFrame.size.height - tolerance) {
-                isFullscreen = YES;
-                break;
+        if (!boundsDict) continue;
+
+        CGRect bounds;
+        if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)boundsDict, &bounds)) {
+            continue;
+        }
+
+        for (NSScreen *screen in screens) {
+            CGDirectDisplayID displayID = MacieDisplayIDForScreen(screen);
+            if (displayID == kCGNullDirectDisplay) continue;
+            if ([covered containsObject:@(displayID)]) continue;
+
+            // Covered means this one window accounts for nearly the whole screen. An
+            // intersection rather than a bare size comparison, so a fullscreen window on
+            // the external display cannot be credited to the built-in one.
+            CGRect screenFrame = CGFrameForScreen(screen, primaryHeight);
+            CGRect overlap = CGRectIntersection(bounds, screenFrame);
+
+            if (overlap.size.width >= screenFrame.size.width - tolerance &&
+                overlap.size.height >= screenFrame.size.height - tolerance) {
+                [covered addObject:@(displayID)];
             }
         }
     }
-    
+
     CFRelease(windowList);
-    return isFullscreen;
+    return [covered copy];
 }
 
 #pragma mark - Playback State Evaluation
 
 - (BOOL)shouldPausePlayback {
-    if (self.pauseOnBattery && self.isOnBattery) {
-        return YES;
-    }
-    if (self.pauseOnFullscreen && self.isFrontmostAppFullscreen) {
-        return YES;
-    }
-    return NO;
+    // Battery is the only whole-machine reason to stop. Fullscreen is reported per display
+    // by -performanceMonitorCoveredScreensChanged:, and folding it in here as well would
+    // stop every display for a game running on one of them.
+    return self.pauseOnBattery && self.isOnBattery;
 }
 
 - (void)evaluatePlaybackState {
     BOOL shouldPause = self.shouldPausePlayback;
-    NSString *reason = @"";
-    
-    if (shouldPause) {
-        if (self.pauseOnBattery && self.isOnBattery) {
-            reason = @"On battery power";
-        } else if (self.pauseOnFullscreen && self.isFrontmostAppFullscreen) {
-            reason = @"Fullscreen app detected";
-        }
-    }
-    
+
     if ([self.delegate respondsToSelector:@selector(performanceMonitorShouldPausePlayback:reason:)]) {
-        [self.delegate performanceMonitorShouldPausePlayback:shouldPause reason:reason];
+        [self.delegate performanceMonitorShouldPausePlayback:shouldPause
+                                                     reason:shouldPause ? @"On battery power" : @""];
+    }
+
+    if ([self.delegate respondsToSelector:@selector(performanceMonitorCoveredScreensChanged:)]) {
+        [self.delegate performanceMonitorCoveredScreensChanged:self.coveredDisplayIDs];
     }
 }
 
@@ -231,6 +256,10 @@ static void PowerSourceCallback(void *context) {
 - (void)setPauseOnFullscreen:(BOOL)pauseOnFullscreen {
     _pauseOnFullscreen = pauseOnFullscreen;
     [[NSUserDefaults standardUserDefaults] setBool:pauseOnFullscreen forKey:kDefaultsPauseOnFullscreen];
+
+    // Detection is skipped entirely while the setting is off, so the covered set is stale
+    // the moment it is switched on and has to be recomputed rather than merely re-sent.
+    [self checkFullscreenState];
     [self evaluatePlaybackState];
 }
 

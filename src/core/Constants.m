@@ -20,6 +20,7 @@ NSString * const kDefaultsSteamappsPath     = @"steamappsPath";
 NSString * const kDefaultsLastMuteState     = @"lastMuteState";
 NSString * const kDefaultsLastWallpaperId   = @"lastWallpaperId";
 NSString * const kDefaultsLastWallpaperSnapshot = @"lastWallpaperSnapshot";
+NSString * const kDefaultsWallpaperTarget   = @"wallpaperTarget";
 NSString * const kDefaultsPauseOnBattery    = @"pauseOnBattery";
 NSString * const kDefaultsPauseOnFullscreen = @"pauseOnFullscreen";
 NSString * const kDefaultsFavoriteIds       = @"favoriteWallpaperIds";

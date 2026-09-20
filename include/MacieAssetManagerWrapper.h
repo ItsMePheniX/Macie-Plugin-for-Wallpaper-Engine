@@ -34,6 +34,14 @@ NS_ASSUME_NONNULL_BEGIN
 /// Return the cached list of video wallpapers from the last scan.
 - (std::vector<Macie::WallpaperProject>)getVideoWallpapers;
 
+/// The same list as plain dictionaries, keyed `id`, `title`, `path`, `preview`,
+/// `description` and `tags`.
+///
+/// This is the one place a WallpaperProject becomes an Objective-C object, so that
+/// everything downstream of the library — the display manager especially — can stay out of
+/// Objective-C++ entirely. Callers that need derived fields add them on top.
+- (NSArray<NSDictionary *> *)videoWallpaperDictionaries;
+
 /// Find a specific wallpaper by its workshop folder ID.
 /// Returns an empty optional if no wallpaper with that ID was found in the last scan.
 - (std::optional<Macie::WallpaperProject>)getWallpaperById:(const std::string &)wallpaperId;

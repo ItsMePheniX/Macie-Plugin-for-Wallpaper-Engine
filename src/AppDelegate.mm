@@ -10,9 +10,7 @@
 #import "WelcomeWindowController.h"
 #import "PerformanceMonitor.h"
 #import "MacieAssetManagerWrapper.h"
-#import "LastWallpaperSnapshot.h"
 #import "Constants.h"
-#import <vector>
 
 @interface AppDelegate ()
 
@@ -52,16 +50,27 @@
 /// Everything that needs a valid steamapps path. Shared by the normal launch
 /// path and by first-launch completion.
 ///
-/// Nothing here waits for the library. The desktop window, the previous session's
-/// wallpaper and the gallery window are all on screen before the scan that used to
-/// block them has finished — on a large library that was seconds of a bouncing Dock
-/// icon and no window at all.
+/// Nothing here waits for the library. Every display's window, the previous session's
+/// wallpapers and the gallery window are all on screen before the scan that used to block
+/// them has finished — on a large library that was seconds of a bouncing Dock icon and no
+/// window at all.
 - (void)startWithConfiguredPath {
-    [self createDesktopWindow];
-    [self restoreLastWallpaperFromSnapshot];
+    [self createDisplayManager];
+    [self.displayManager restoreFromSnapshots];
     [self beginWallpaperScan];
     [self showGallery];
     [self setupPerformanceMonitor];
+}
+
+/// The manager owns every wallpaper window and watches for screens coming and going, so
+/// this class no longer holds a window, a renderer, or a screen-parameters observer.
+- (void)createDisplayManager {
+    self.displayManager = [[WallpaperDisplayManager alloc] init];
+
+    __weak typeof(self) weakSelf = self;
+    self.displayManager.onDisplaysChanged = ^{
+        [weakSelf.galleryController displaysChanged];
+    };
 }
 
 - (void)showWelcomeWindow {
@@ -123,159 +132,31 @@
 - (void)finishWallpaperScan {
     self.scanInFlight = NO;
 
-    // Playback is settled before the grid reloads: -reloadFromAssetManager reads the
-    // playing wallpaper's id out of NSUserDefaults, so choosing a wallpaper after it
-    // would leave the hero and the cards marking the wrong one.
-    if (!self.videoRenderer || ![self playingWallpaperStillInstalled]) {
-        [self playFirstAvailableVideo];
-    }
+    NSArray<NSDictionary *> *videos = [self.assetManager videoWallpaperDictionaries];
 
-    [self.galleryController reloadFromAssetManager];
-}
-
-/// Whether the wallpaper the app thinks is playing is still in the library. A folder
-/// change or an unsubscribe can take it away underneath us.
-- (BOOL)playingWallpaperStillInstalled {
-    NSString *playingId = [[NSUserDefaults standardUserDefaults]
-        stringForKey:kDefaultsLastWallpaperId];
-    if (!playingId.length) return NO;
-
-    std::string idString = [playingId UTF8String];
-    return [self.assetManager getWallpaperById:idString].has_value();
-}
-
-/// Puts the previous session's wallpaper straight back on the desktop. The library
-/// scan is what normally supplies a wallpaper's video path, which is why this used to
-/// have to wait for it; the snapshot carries the path instead.
-///
-/// Leaves videoRenderer nil on any failure, which is the signal -finishWallpaperScan
-/// uses to pick a wallpaper from the real library instead.
-- (void)restoreLastWallpaperFromSnapshot {
-    NSDictionary *snapshot = MacieLoadLastWallpaperSnapshot();
-    NSString *path = snapshot[@"path"];
-    if (!path.length) return;
-
-    AVVideoRenderer *renderer = [[AVVideoRenderer alloc] initWithWindow:self.desktopWindow];
-    if (![renderer loadAndPlayVideo:path]) {
-        NSLog(@"Could not restore last wallpaper before scan: %@", path);
-        return;
-    }
-
-    self.videoRenderer = renderer;
-    [self restoreMuteState];
-    NSLog(@"Restored last wallpaper before scan: %@", snapshot[@"title"]);
-}
-
-/// The renderer starts muted, so this only ever has to undo that. Shared by the
-/// snapshot restore and the post-scan path so the two cannot drift.
-- (void)restoreMuteState {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL hasStoredState = [defaults objectForKey:kDefaultsLastMuteState] != nil;
-    BOOL lastMuteState  = hasStoredState ? [defaults boolForKey:kDefaultsLastMuteState] : YES;
-
-    if (!lastMuteState) [self.videoRenderer unmute];
-}
-
-- (void)createDesktopWindow {
-    NSScreen *mainScreen = [NSScreen mainScreen];
-
-    self.desktopWindow = [[NSWindow alloc] initWithContentRect:mainScreen.frame
-                                                      styleMask:NSWindowStyleMaskBorderless
-                                                        backing:NSBackingStoreBuffered
-                                                          defer:NO];
-
-    self.desktopWindow.backgroundColor = [NSColor clearColor];
-    self.desktopWindow.opaque = NO;
-
-    // Set window level below desktop icons
-    self.desktopWindow.level = kCGDesktopWindowLevel - 1;
-
-    self.desktopWindow.collectionBehavior = NSWindowCollectionBehaviorStationary |
-                                             NSWindowCollectionBehaviorCanJoinAllSpaces |
-                                             NSWindowCollectionBehaviorIgnoresCycle;
-
-    self.desktopWindow.ignoresMouseEvents = YES;
-    [self.desktopWindow orderBack:nil];
-
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(screenParametersChanged:)
-                                                 name:NSApplicationDidChangeScreenParametersNotification
-                                               object:nil];
-}
-
-/// Chooses and starts a wallpaper from the scanned library. Only reached when the
-/// snapshot could not supply one — a first run, or a wallpaper that is no longer
-/// installed.
-- (void)playFirstAvailableVideo {
-    std::vector<Macie::WallpaperProject> wallpapers = [self.assetManager getVideoWallpapers];
-
-    if (wallpapers.empty()) {
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        NSString *steamPath = [defaults stringForKey:kDefaultsSteamappsPath];
+    if (!videos.count) {
+        NSString *steamPath = [[NSUserDefaults standardUserDefaults]
+            stringForKey:kDefaultsSteamappsPath];
         NSLog(@"WARNING: No video wallpapers found");
         NSLog(@"  Check path: %@/workshop/content/431960/", steamPath ?: @"(not configured)");
-        return;
     }
 
-    // Restore the wallpaper that was playing in the previous session.
-    // Falls back to wallpapers[0] if no ID was saved or the saved ID is no longer present.
-    Macie::WallpaperProject wallpaperToPlay = wallpapers[0];
+    // Playback settles before the grid reloads: the grid asks the manager what is on the
+    // target display, so choosing wallpapers after this would leave the hero and the cards
+    // marking the wrong one.
+    //
+    // This one call replaces what used to be a still-installed check followed by
+    // -playFirstAvailableVideo. Choosing a wallpaper per display, falling back when one has
+    // been uninstalled, and remembering the result all belong together.
+    [self.displayManager reconcileWithLibrary:videos];
 
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSString *savedId = [defaults stringForKey:kDefaultsLastWallpaperId];
-
-    if (savedId.length > 0) {
-        std::string savedIdStr = [savedId UTF8String];
-        auto found = [self.assetManager getWallpaperById:savedIdStr];
-        if (found.has_value()) {
-            wallpaperToPlay = found.value();
-            NSLog(@"Restoring last wallpaper: %s", wallpaperToPlay.title.c_str());
-        } else {
-            NSLog(@"Last wallpaper ID '%@' not found in library, falling back to first", savedId);
-        }
-    }
-
-    // stringWithUTF8String: returns nil on malformed bytes, and a nil in a dictionary
-    // literal is fatal, so each one is defaulted.
-    NSString *videoPath   = [NSString stringWithUTF8String:wallpaperToPlay.videoFilePath.c_str()] ?: @"";
-    NSString *title       = [NSString stringWithUTF8String:wallpaperToPlay.title.c_str()]         ?: @"";
-    NSString *wallpaperId = [NSString stringWithUTF8String:wallpaperToPlay.id.c_str()]            ?: @"";
-    NSString *previewPath = [NSString stringWithUTF8String:wallpaperToPlay.previewPath.c_str()]   ?: @"";
-    NSString *description = [NSString stringWithUTF8String:wallpaperToPlay.description.c_str()]   ?: @"";
-
-    NSLog(@"Loading wallpaper: %@", title);
-
-    // Reused when the snapshot restore already built one: a second renderer would
-    // leave the first one's layer in the desktop window.
-    if (!self.videoRenderer) {
-        self.videoRenderer = [[AVVideoRenderer alloc] initWithWindow:self.desktopWindow];
-    }
-    BOOL success = [self.videoRenderer loadAndPlayVideo:videoPath];
-
-    if (success) {
-        // Record which wallpaper is now playing (covers the first-launch case where no ID was saved)
-        [defaults setObject:wallpaperId forKey:kDefaultsLastWallpaperId];
-        MacieSaveLastWallpaperSnapshot(@{
-            @"id":          wallpaperId,
-            @"title":       title,
-            @"path":        videoPath,
-            @"preview":     previewPath,
-            @"description": description
-        });
-
-        [self restoreMuteState];
-
-        // The gallery may have been built before a renderer existed.
-        [self.galleryController attachVideoRenderer:self.videoRenderer];
-    } else {
-        NSLog(@"ERROR: Failed to load video wallpaper");
-    }
+    [self.galleryController reloadFromAssetManager];
 }
 
 - (void)showGallery {
     if (!self.galleryController) {
         self.galleryController = [[MainWindowController alloc] initWithAssetManager:self.assetManager
-                                                                      videoRenderer:self.videoRenderer];
+                                                                    displayManager:self.displayManager];
 
         // Typed callback — replaces the unsafe performSelector pattern
         __weak typeof(self) weakSelf = self;
@@ -332,19 +213,21 @@
 #pragma mark - Sleep / Wake
 
 - (void)systemWillSleep:(NSNotification *)notification {
-    // Pause immediately — sleep overrides all other playback state.
-    if (self.videoRenderer) {
-        NSLog(@"System going to sleep — pausing wallpaper");
-        [self.videoRenderer pause];
-    }
+    // Pause immediately — sleep overrides all other playback state, on every display.
+    NSLog(@"System going to sleep — pausing wallpapers");
+    [self.displayManager pauseAll];
 }
 
 - (void)systemDidWake:(NSNotification *)notification {
-    // Re-evaluate rather than blindly resuming — if pause-on-battery is on and the
-    // Mac woke on battery power, the wallpaper should stay paused.
-    if (self.videoRenderer && self.performanceMonitor) {
-        NSLog(@"System woke — re-evaluating playback state");
+    NSLog(@"System woke — re-evaluating playback state");
+
+    // Re-evaluate rather than blindly resuming — if pause-on-battery is on and the Mac
+    // woke on battery power, the wallpapers should stay paused. Without a monitor there is
+    // nothing to consult and nothing to wait for.
+    if (self.performanceMonitor) {
         [self.performanceMonitor evaluatePlaybackState];
+    } else {
+        [self.displayManager resumeAll];
     }
 }
 
@@ -352,22 +235,17 @@
 
 - (void)performanceMonitorShouldPausePlayback:(BOOL)shouldPause reason:(NSString *)reason {
     if (shouldPause) {
-        [self.videoRenderer pause];
+        [self.displayManager pauseAll];
     } else {
-        [self.videoRenderer play];
+        [self.displayManager resumeAll];
     }
 }
 
-/// The desktop window must track the screen it lives on: a resolution change or
-/// a display swap leaves the old frame behind, showing the wallpaper at the wrong
-/// size (or off-screen entirely).
-- (void)screenParametersChanged:(NSNotification *)notification {
-    NSScreen *mainScreen = [NSScreen mainScreen];
-    if (!self.desktopWindow || !mainScreen) return;
-
-    [self.desktopWindow setFrame:mainScreen.frame display:YES];
-    self.desktopWindow.level = kCGDesktopWindowLevel - 1;
-    [self.desktopWindow orderBack:nil];
+/// A fullscreen app covers one screen, not the machine, so this stops only the displays it
+/// is actually on. The manager translates the ids, since it is the only thing that should
+/// hold the display-id-to-key mapping.
+- (void)performanceMonitorCoveredScreensChanged:(NSSet<NSNumber *> *)displayIDs {
+    [self.displayManager setCoveredDisplayIDs:displayIDs];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {
@@ -381,14 +259,9 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
 
-    if (self.videoRenderer) {
-        [self.videoRenderer stop];
-        self.videoRenderer = nil;
-    }
-
-    if (self.desktopWindow) {
-        [self.desktopWindow close];
-        self.desktopWindow = nil;
+    if (self.displayManager) {
+        [self.displayManager teardown];
+        self.displayManager = nil;
     }
 
     // assetManager is a strong Obj-C property — ARC releases it automatically,
@@ -407,7 +280,7 @@
 
     if (self.welcomeController) {
         [self.welcomeController.window makeKeyAndOrderFront:nil];
-    } else if (self.videoRenderer) {
+    } else if (self.displayManager) {
         [self showGallery];
     }
     return YES;
@@ -464,7 +337,7 @@
 - (void)reloadWallpapers {
     // Reached before setup ever ran: the user opened Cmd+, from the welcome window and
     // picked a folder there. There is nothing to reload, so this is a first start.
-    if (!self.desktopWindow) {
+    if (!self.displayManager) {
         self.welcomeController = nil;
         [self startWithConfiguredPath];
         return;
@@ -597,7 +470,7 @@
 /// Cmd+, — the settings live in the gallery window's own sheet, so make sure the
 /// gallery is on screen and hand off to it.
 - (void)showPreferences:(id)sender {
-    if (!self.galleryController && !self.videoRenderer) {
+    if (!self.galleryController && !self.displayManager) {
         // No library loaded yet, so there is no gallery to host the sheet — the
         // only setting that can meaningfully change at this point is the location.
         [self changeSteamappsLocation:sender];

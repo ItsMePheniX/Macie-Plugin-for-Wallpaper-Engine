@@ -25,10 +25,16 @@ extern NSString * const kWorkshopSubpath;
 // UserDefaults Keys
 extern NSString * const kDefaultsSteamappsPath;
 extern NSString * const kDefaultsLastMuteState;
+/// Superseded by the per-display snapshot map below, which records each display's
+/// wallpaper id. Read once at launch to migrate installs that predate that map, and
+/// never written again — two records of the same fact can disagree.
 extern NSString * const kDefaultsLastWallpaperId;
-/// A dictionary snapshot of the last-played wallpaper, held so that playback and
-/// the hero panel can be restored at launch without waiting for the library scan.
+/// Display key → snapshot of the wallpaper on that display, held so that every
+/// display's playback and the hero panel can be restored at launch without waiting for
+/// the library scan. Also the app's only record of which wallpaper is on which display.
 extern NSString * const kDefaultsLastWallpaperSnapshot;
+/// The display the gallery currently applies wallpapers to, or absent for all of them.
+extern NSString * const kDefaultsWallpaperTarget;
 extern NSString * const kDefaultsPauseOnBattery;
 extern NSString * const kDefaultsPauseOnFullscreen;
 extern NSString * const kDefaultsFavoriteIds;

@@ -1,17 +1,15 @@
 //
 //  LastWallpaperSnapshot.h
-//  MacieWallpaper - Restoring the last-played wallpaper before a scan finishes
+//  MacieWallpaper - Restoring each display's wallpaper before a scan finishes
 //
 //  Created on 2026-08-31.
 //
-//  The library scan is what tells the app where a wallpaper's video file lives, so
-//  playback used to have to wait for it. These two functions keep just enough of
-//  the last-played wallpaper in NSUserDefaults to start it again immediately: the
-//  path for AVVideoRenderer, and the title, description and preview for the hero
-//  panel.
+//  The library scan is what normally tells the app where a wallpaper's video file
+//  lives, which is why playback used to have to wait for it. These snapshots carry
+//  just enough of each display's wallpaper to start it immediately at launch.
 //
-//  It is a cache, never a source of truth. The loader validates that the video file
-//  still exists, and the scan's results always replace it.
+//  Keyed by the stable display key from MacieDisplayIdentity, so a two-monitor setup
+//  restores both panels rather than one.
 //
 
 #ifndef LastWallpaperSnapshot_h
@@ -19,23 +17,35 @@
 
 #import <Foundation/Foundation.h>
 
-// Both callers are Objective-C++ translation units and this compiles as C, so the
-// declarations need C linkage or the link fails on mangled names.
+// Defined in a .m file but consumed from Objective-C++ translation units, so the
+// declarations need C linkage or the C++ side looks for mangled symbols.
 #if defined(__cplusplus)
 extern "C" {
 #endif
 
-/// Persists the fields needed to restore `video` at the next launch. A video
-/// missing an id or a path is ignored rather than saved half-formed.
-void MacieSaveLastWallpaperSnapshot(NSDictionary *video);
+/// Persists the fields needed to restore `video` on `displayKey` at the next launch.
+/// Pass a nil or empty `displayKey` for a display that has no stable identity — the
+/// call becomes a no-op rather than corrupting another display's entry.
+void MacieSaveLastWallpaperSnapshot(NSDictionary *_Nonnull video,
+                                    NSString *_Nullable displayKey);
 
-/// Returns the saved snapshot, or nil if nothing was saved or its video file is no
-/// longer on disk. The result has the same keys `HeroPanelView` and
-/// `AVVideoRenderer` read from a real library entry.
-NSDictionary *MacieLoadLastWallpaperSnapshot(void);
+/// The saved snapshot for `displayKey`, or nil if nothing was saved, the entry is
+/// malformed, or its video file is no longer on disk. A nil return means "cannot play
+/// this right now", which is what the launch restore needs to know.
+NSDictionary *_Nullable MacieLoadLastWallpaperSnapshot(NSString *_Nullable displayKey);
+
+/// The wallpaper id remembered for `displayKey`, even when its video file is
+/// currently missing. An unmounted external drive should not lose the assignment: the
+/// post-scan reconcile re-resolves this id against the freshly scanned library.
+NSString *_Nullable MacieLoadAssignedWallpaperId(NSString *_Nullable displayKey);
+
+/// One-time upgrade from the single-display format, where the snapshot was one flat
+/// dictionary and the playing id lived in kDefaultsLastWallpaperId. Adopts whatever
+/// was there as `primaryDisplayKey`'s entry. Safe to call on every launch.
+void MacieMigrateLastWallpaperSnapshotIfNeeded(NSString *_Nullable primaryDisplayKey);
 
 #if defined(__cplusplus)
-}
+}   // extern "C"
 #endif
 
 #endif /* LastWallpaperSnapshot_h */

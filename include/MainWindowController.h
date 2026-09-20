@@ -10,7 +10,7 @@
 // Forward declarations — keeps C++ headers out of pure .m compilation units.
 // MainWindowController.mm imports the full headers directly.
 @class MacieAssetManagerWrapper;
-@class AVVideoRenderer;
+@class WallpaperDisplayManager;
 
 @interface MainWindowController : NSWindowController <NSCollectionViewDelegate>
 
@@ -18,14 +18,15 @@
 /// AppDelegate sets this to trigger a full wallpaper reload.
 @property (copy, nonatomic, nullable) void (^onWallpapersReloadRequested)(void);
 
-/// `renderer` may be nil: at launch the gallery opens before the library scan has
-/// finished, and on a first run there is nothing to play until it does. Pass the
-/// renderer in later with -attachVideoRenderer:.
+/// `manager` is required and already knows every attached display, so there is no
+/// attach-it-later step: it outlives this window and exists before it. What it does not
+/// have yet is the library, which arrives separately through -reloadFromAssetManager.
 - (nonnull instancetype)initWithAssetManager:(nonnull MacieAssetManagerWrapper *)assetManager
-                               videoRenderer:(nullable AVVideoRenderer *)renderer;
+                              displayManager:(nonnull WallpaperDisplayManager *)manager;
 
-/// Supplies the renderer when it did not exist at construction time.
-- (void)attachVideoRenderer:(nonnull AVVideoRenderer *)renderer;
+/// A display was plugged in, pulled out or reordered: rebuilds the target picker and
+/// re-marks whatever the current target is now showing.
+- (void)displaysChanged;
 
 #pragma mark - Library scanning
 

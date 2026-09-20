@@ -28,8 +28,10 @@ static const CGFloat kHeroApplyWidth = 84.0;
 
 // Information panel
 @property (strong, nonatomic) NSVisualEffectView *infoPanel;
+@property (strong, nonatomic) NSView             *badgeRow;
 @property (strong, nonatomic) NSView             *stateDot;
 @property (strong, nonatomic) NSTextField        *stateLabel;
+@property (strong, nonatomic) NSTextField        *contextLabel;
 @property (strong, nonatomic) NSTextField        *titleLabel;
 @property (strong, nonatomic) NSTextField        *metaLabel;
 @property (strong, nonatomic) NSTextField        *descLabel;
@@ -41,6 +43,10 @@ static const CGFloat kHeroApplyWidth = 84.0;
 @property (strong, nonatomic) NSDictionary *wallpaper;
 @property (assign, nonatomic) BOOL          isPreview;
 @property (assign, nonatomic) BOOL          favorite;
+/// Which display PLAYING refers to, and whether the others agree. Set by the host and
+/// outlives any one wallpaper.
+@property (copy, nonatomic)   NSString     *displayContextName;
+@property (assign, nonatomic) BOOL          othersDiffer;
 
 @end
 
@@ -126,8 +132,10 @@ static const CGFloat kHeroApplyWidth = 84.0;
 
     // --- State badge: dot + word --------------------------------------------
     // PLAYING (accent) means this wallpaper is on the desktop; PREVIEW (amber)
-    // means it is only being looked at.
+    // means it is only being looked at. With more than one display attached, a
+    // right-aligned line says which desktop is meant.
     NSView *badgeRow = [[NSView alloc] initWithFrame:NSZeroRect];
+    self.badgeRow = badgeRow;
     [self.infoPanel addSubview:badgeRow];
     [stack addView:badgeRow height:badgeRowH followedByGap:kMacieSpaceS];
 
@@ -145,6 +153,15 @@ static const CGFloat kHeroApplyWidth = 84.0;
     self.stateLabel.frame = NSMakeRect(badgeLabelX, (badgeRowH - badgeLabelH) / 2.0,
                                        innerW - badgeLabelX, badgeLabelH);
     [badgeRow addSubview:self.stateLabel];
+
+    self.contextLabel = MacieLabel(@"", MacieFontCaption(), MacieTertiaryTextColor());
+    self.contextLabel.alignment = NSTextAlignmentRight;
+    // Middle truncation rather than tail: a long monitor name must not be allowed to eat
+    // "OTHERS DIFFER", which is the half that changes what PLAYING means.
+    self.contextLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    self.contextLabel.frame = NSMakeRect(badgeLabelX, (badgeRowH - badgeLabelH) / 2.0,
+                                         innerW - badgeLabelX, badgeLabelH);
+    [badgeRow addSubview:self.contextLabel];
 
     // --- Title / metadata / description -------------------------------------
     self.titleLabel = MacieLabel(@"", MacieFontTitle(), MaciePrimaryTextColor());
@@ -190,6 +207,27 @@ static const CGFloat kHeroApplyWidth = 84.0;
     self.favoriteButton.frame = NSMakeRect(x, 0, kMacieControlHeight, kMacieControlHeight);
 }
 
+/// The state word and the display line share one row, so the divide between them is
+/// measured rather than fixed: PLAYING and NOTHING PLAYING are very different widths, and
+/// the display name should have whatever is left.
+- (void)layoutBadgeRow {
+    CGFloat rowW = self.badgeRow.bounds.size.width;
+    if (rowW <= 0) return;
+
+    NSRect stateFrame = self.stateLabel.frame;
+    CGFloat stateW = ceil([self.stateLabel.stringValue
+        sizeWithAttributes:@{NSFontAttributeName: self.stateLabel.font}].width) + 2;
+    stateW = MIN(stateW, rowW - stateFrame.origin.x);
+
+    self.stateLabel.frame = NSMakeRect(stateFrame.origin.x, stateFrame.origin.y,
+                                       stateW, stateFrame.size.height);
+
+    CGFloat contextX = stateFrame.origin.x + stateW + kMacieSpaceS;
+    self.contextLabel.frame = NSMakeRect(contextX, self.contextLabel.frame.origin.y,
+                                         MAX(0.0, rowW - contextX),
+                                         self.contextLabel.frame.size.height);
+}
+
 #pragma mark - Public API
 
 - (void)showWallpaper:(NSDictionary *)video
@@ -215,6 +253,7 @@ static const CGFloat kHeroApplyWidth = 84.0;
     self.titleLabel.toolTip     = video[@"title"];
     self.descLabel.stringValue  = video[@"description"] ?: @"";
 
+    [self layoutBadgeRow];
     [self layoutActionRow];
     [self updateFavoriteButton];
     [self loadMetadata:video];
@@ -237,8 +276,32 @@ static const CGFloat kHeroApplyWidth = 84.0;
     self.descLabel.stringValue  = @"";
     self.thumbnailView.image    = nil;
 
+    [self layoutBadgeRow];
     [self layoutActionRow];
     [self updateFavoriteButton];
+}
+
+- (void)setDisplayContextName:(NSString *)name othersDiffer:(BOOL)differ {
+    self.displayContextName = name;
+    self.othersDiffer       = differ;
+    [self updateContextLabel];
+}
+
+/// Uppercased to sit in the same typographic register as PLAYING beside it. "OTHERS DIFFER"
+/// is the whole point of the line: without it, a hero marked PLAYING on a two-monitor Mac
+/// reads as a claim about both desktops.
+- (void)updateContextLabel {
+    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:2];
+    if (self.displayContextName.length) [parts addObject:self.displayContextName.uppercaseString];
+    if (self.othersDiffer)              [parts addObject:@"OTHERS DIFFER"];
+
+    self.contextLabel.stringValue = [parts componentsJoinedByString:@"  ·  "];
+    // The row is narrow and monitor names are not, so the untruncated text stays reachable.
+    if (!parts.count)            self.contextLabel.toolTip = nil;
+    else if (self.othersDiffer)  self.contextLabel.toolTip = @"The other displays are showing different wallpapers";
+    else                         self.contextLabel.toolTip = self.contextLabel.stringValue;
+
+    [self layoutBadgeRow];
 }
 
 - (void)setFavorite:(BOOL)favorite {
