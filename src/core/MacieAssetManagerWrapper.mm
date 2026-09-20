@@ -72,4 +72,35 @@
 
 // unique_ptr destructor is called automatically by ARC dealloc — no manual cleanup needed.
 
+- (void)scanWallpaperEngineAsync:(const std::string &)steamappsPath
+                        progress:(void (^)(NSUInteger scanned, NSUInteger total))progress
+                      completion:(void (^)(void))completion {
+    // Capture path by value so it outlives this stack frame on the background queue.
+    std::string pathCopy = steamappsPath;
+
+    // Keep a weak self so the block does not extend the wrapper's lifetime.
+    __weak MacieAssetManagerWrapper *weakSelf = self;
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        MacieAssetManagerWrapper *strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        // Run the synchronous scan. The C++ layer populates its internal cache;
+        // we do not need the return value here — callers use -videoWallpaperDictionaries.
+        strongSelf->_assetManager->scanWallpaperEngine(pathCopy);
+
+        // Report a single "done" progress tick so the UI spinner advances.
+        NSUInteger total = (NSUInteger)strongSelf->_assetManager->getVideoWallpapers().size();
+        if (progress) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                progress(total, total);
+            });
+        }
+
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), completion);
+        }
+    });
+}
+
 @end

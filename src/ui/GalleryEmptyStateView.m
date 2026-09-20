@@ -9,9 +9,10 @@
 #import "DesignSystem.h"
 
 @implementation GalleryEmptyStateView {
-    NSImageView *_iconView;
-    NSTextField *_titleLabel;
-    NSTextField *_subtitleLabel;
+    NSImageView          *_iconView;
+    NSTextField          *_titleLabel;
+    NSTextField          *_subtitleLabel;
+    NSProgressIndicator  *_progressIndicator; // shown during library scan
 }
 
 static const CGFloat kIconSize     = 44.0;
@@ -62,7 +63,15 @@ static const CGFloat kBlockWidth   = 360.0;
     if (top > h) top = h;
 
     CGFloat y = top - kIconSize;
-    _iconView.frame = NSMakeRect((w - kIconSize) / 2.0, y, kIconSize, kIconSize);
+    NSRect iconFrame = NSMakeRect((w - kIconSize) / 2.0, y, kIconSize, kIconSize);
+    _iconView.frame = iconFrame;
+    if (_progressIndicator) {
+        // Spinner sits in the same slot; size it to match the icon area
+        CGFloat spinSize = 32.0;
+        _progressIndicator.frame = NSMakeRect((w - spinSize) / 2.0,
+                                              y + (kIconSize - spinSize) / 2.0,
+                                              spinSize, spinSize);
+    }
 
     y -= kMacieSpaceL + titleH;
     _titleLabel.frame = NSMakeRect(x, y, blockW, titleH);
@@ -78,10 +87,39 @@ static const CGFloat kBlockWidth   = 360.0;
 - (void)showSymbol:(NSString *)symbolName
              title:(NSString *)title
           subtitle:(NSString *)subtitle {
+    // Hide spinner if it was showing
+    [_progressIndicator stopAnimation:nil];
+    _progressIndicator.hidden = YES;
+    _iconView.hidden = NO;
+
     if (@available(macOS 11.0, *)) {
         _iconView.image = [NSImage imageWithSystemSymbolName:symbolName
                                    accessibilityDescription:title];
     }
+    _titleLabel.stringValue    = title ?: @"";
+    _subtitleLabel.stringValue = subtitle ?: @"";
+    self.hidden = NO;
+    self.needsLayout = YES;
+}
+
+- (void)showProgressTitle:(NSString *)title
+                 subtitle:(NSString *)subtitle
+                 progress:(NSUInteger)progress
+                    total:(NSUInteger)total {
+    // Lazily create the spinner the first time it is needed
+    if (!_progressIndicator) {
+        _progressIndicator = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
+        _progressIndicator.style = NSProgressIndicatorStyleSpinning;
+        _progressIndicator.controlSize = NSControlSizeRegular;
+        _progressIndicator.displayedWhenStopped = NO;
+        [self addSubview:_progressIndicator];
+    }
+
+    // Position spinner where the icon normally lives (layout: centres on resize)
+    _iconView.hidden = YES;
+    _progressIndicator.hidden = NO;
+    [_progressIndicator startAnimation:nil];
+
     _titleLabel.stringValue    = title ?: @"";
     _subtitleLabel.stringValue = subtitle ?: @"";
     self.hidden = NO;
