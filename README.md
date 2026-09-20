@@ -1,7 +1,8 @@
 # Macie-Plugin-for-Wallpaper-Engine
 
 > **Note**: This is a personal project built for my own use. Contributions, suggestions, and improvements from others are always appreciated!
-> **Note**: Co-pilot is being used sometimes to review the changes, i have a memory of a gold fish
+> 
+> **Note**: Copilot is sometimes used to review changes, as I have the memory of a goldfish.
 
 A lightweight macOS desktop application that plays Wallpaper Engine videos as desktop wallpapers using native macOS frameworks. Features a modern dark-themed gallery interface for browsing and managing wallpapers.
 
