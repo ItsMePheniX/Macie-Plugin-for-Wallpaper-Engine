@@ -18,6 +18,7 @@
 /// AppDelegate sets this to trigger a full wallpaper reload.
 @property (copy, nonatomic, nullable) void (^onWallpapersReloadRequested)(void);
 
+<<<<<<< HEAD
 /// `manager` is required and already knows every attached display, so there is no
 /// attach-it-later step: it outlives this window and exists before it. What it does not
 /// have yet is the library, which arrives separately through -reloadFromAssetManager.
@@ -42,6 +43,10 @@
 
 /// Leaves the scanning state and rebuilds the gallery from the asset manager.
 - (void)reloadFromAssetManager;
+=======
+- (nonnull instancetype)initWithAssetManager:(nonnull MacieAssetManagerWrapper *)assetManager
+                               videoRenderer:(nonnull AVVideoRenderer *)renderer;
+>>>>>>> origin/main
 
 /// The app's settings live in this window's own sheet; the AppDelegate's Cmd+,
 /// handler routes here rather than opening a second settings surface.

@@ -19,17 +19,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// Direct access to the owned C++ AssetManager.
 @property (nonatomic, readonly) Macie::AssetManager *assetManager;
 
-/// Scans a steamapps directory off the main thread.
-///
-/// `progress` and `completion` are both delivered on the main queue. Progress is
-/// throttled — a large library would otherwise queue thousands of main-thread hops
-/// to move one bar — and reports folders examined out of folders found, so it
-/// advances even through wallpapers this app cannot use. `completion` fires exactly
-/// once, after the results have been published, so -getVideoWallpapers is ready by
-/// the time it runs.
-- (void)scanWallpaperEngineAsync:(const std::string &)steamappsPath
-                        progress:(nullable void (^)(NSUInteger scanned, NSUInteger total))progress
-                      completion:(void (^)(void))completion;
+/// Scan a steamapps directory and return all video wallpapers found.
+- (std::vector<Macie::WallpaperProject>)scanWallpaperEngine:(const std::string &)steamappsPath;
 
 /// Return the cached list of video wallpapers from the last scan.
 - (std::vector<Macie::WallpaperProject>)getVideoWallpapers;

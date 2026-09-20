@@ -12,18 +12,6 @@
 #import "MacieAssetManagerWrapper.h"
 #import "Constants.h"
 
-@interface AppDelegate ()
-
-/// Bumped by every -beginWallpaperScan. Progress and results from a superseded scan
-/// are dropped, so changing the Steam folder mid-scan cannot leave the gallery
-/// showing the previous folder's library.
-@property (assign, nonatomic) NSUInteger scanGeneration;
-/// YES while a scan is running. The gallery may be built during one and has to enter
-/// its scanning state rather than announcing an empty library.
-@property (assign, nonatomic) BOOL scanInFlight;
-
-@end
-
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
@@ -49,6 +37,7 @@
 
 /// Everything that needs a valid steamapps path. Shared by the normal launch
 /// path and by first-launch completion.
+<<<<<<< HEAD
 ///
 /// Nothing here waits for the library. Every display's window, the previous session's
 /// wallpapers and the gallery window are all on screen before the scan that used to block
@@ -59,6 +48,12 @@
     [self.displayManager restoreFromSnapshots];
     [self beginWallpaperScan];
     [self showGallery];
+=======
+- (void)startWithConfiguredPath {
+    [self scanWallpaperEngineVideos];
+    [self createDesktopWindow];
+    [self playFirstAvailableVideo];
+>>>>>>> origin/main
     [self setupPerformanceMonitor];
 }
 
@@ -91,12 +86,7 @@
     [self.welcomeController.window makeKeyAndOrderFront:nil];
 }
 
-#pragma mark - Library scanning
-
-/// Scans on a background queue and drives the gallery's progress state from it. The
-/// window is already up by the time this runs, so a slow library reads as work in
-/// progress instead of a hang.
-- (void)beginWallpaperScan {
+- (void)scanWallpaperEngineVideos {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSString *steamappsPath = [defaults stringForKey:kDefaultsSteamappsPath];
 
@@ -105,17 +95,10 @@
         return;
     }
 
-    self.scanGeneration++;
-    const NSUInteger generation = self.scanGeneration;
-    self.scanInFlight = YES;
-
-    // Covers a rescan, where the gallery already exists. At launch it does not yet,
-    // and -showGallery puts it into the scanning state as it builds it.
-    [self.galleryController beginScanProgress];
-
     std::string pathString = [steamappsPath UTF8String];
-    __weak AppDelegate *weakSelf = self;
+    std::vector<Macie::WallpaperProject> wallpapers = [self.assetManager scanWallpaperEngine:pathString];
 
+<<<<<<< HEAD
     [self.assetManager scanWallpaperEngineAsync:pathString
         progress:^(NSUInteger scanned, NSUInteger total) {
             AppDelegate *strongSelf = weakSelf;
@@ -137,6 +120,44 @@
     if (!videos.count) {
         NSString *steamPath = [[NSUserDefaults standardUserDefaults]
             stringForKey:kDefaultsSteamappsPath];
+=======
+    NSLog(@"Found %lu video wallpapers", wallpapers.size());
+}
+
+- (void)createDesktopWindow {
+    NSScreen *mainScreen = [NSScreen mainScreen];
+
+    self.desktopWindow = [[NSWindow alloc] initWithContentRect:mainScreen.frame
+                                                      styleMask:NSWindowStyleMaskBorderless
+                                                        backing:NSBackingStoreBuffered
+                                                          defer:NO];
+
+    self.desktopWindow.backgroundColor = [NSColor clearColor];
+    self.desktopWindow.opaque = NO;
+
+    // Set window level below desktop icons
+    self.desktopWindow.level = kCGDesktopWindowLevel - 1;
+
+    self.desktopWindow.collectionBehavior = NSWindowCollectionBehaviorStationary |
+                                             NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                             NSWindowCollectionBehaviorIgnoresCycle;
+
+    self.desktopWindow.ignoresMouseEvents = YES;
+    [self.desktopWindow orderBack:nil];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(screenParametersChanged:)
+                                                 name:NSApplicationDidChangeScreenParametersNotification
+                                               object:nil];
+}
+
+- (void)playFirstAvailableVideo {
+    std::vector<Macie::WallpaperProject> wallpapers = [self.assetManager getVideoWallpapers];
+
+    if (wallpapers.empty()) {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSString *steamPath = [defaults stringForKey:kDefaultsSteamappsPath];
+>>>>>>> origin/main
         NSLog(@"WARNING: No video wallpapers found");
         NSLog(@"  Check path: %@/workshop/content/431960/", steamPath ?: @"(not configured)");
     }
@@ -150,7 +171,49 @@
     // been uninstalled, and remembering the result all belong together.
     [self.displayManager reconcileWithLibrary:videos];
 
+<<<<<<< HEAD
     [self.galleryController reloadFromAssetManager];
+=======
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *savedId = [defaults stringForKey:kDefaultsLastWallpaperId];
+
+    if (savedId.length > 0) {
+        std::string savedIdStr = [savedId UTF8String];
+        auto found = [self.assetManager getWallpaperById:savedIdStr];
+        if (found.has_value()) {
+            wallpaperToPlay = found.value();
+            NSLog(@"Restoring last wallpaper: %s", wallpaperToPlay.title.c_str());
+        } else {
+            NSLog(@"Last wallpaper ID '%@' not found in library, falling back to first", savedId);
+        }
+    }
+
+    NSString *videoPath = [NSString stringWithUTF8String:wallpaperToPlay.videoFilePath.c_str()];
+    NSString *title = [NSString stringWithUTF8String:wallpaperToPlay.title.c_str()];
+    NSString *wallpaperId = [NSString stringWithUTF8String:wallpaperToPlay.id.c_str()];
+
+    NSLog(@"Loading wallpaper: %@", title);
+
+    self.videoRenderer = [[AVVideoRenderer alloc] initWithWindow:self.desktopWindow];
+    BOOL success = [self.videoRenderer loadAndPlayVideo:videoPath];
+
+    if (success) {
+        // Record which wallpaper is now playing (covers the first-launch case where no ID was saved)
+        [defaults setObject:wallpaperId forKey:kDefaultsLastWallpaperId];
+
+        // Restore mute state from previous session
+        BOOL hasStoredState = [defaults objectForKey:kDefaultsLastMuteState] != nil;
+        BOOL lastMuteState = hasStoredState ? [defaults boolForKey:kDefaultsLastMuteState] : YES;
+
+        if (!lastMuteState) {
+            [self.videoRenderer unmute];
+        }
+
+        [self showGallery];
+    } else {
+        NSLog(@"ERROR: Failed to load video wallpaper");
+    }
+>>>>>>> origin/main
 }
 
 - (void)showGallery {
@@ -163,10 +226,6 @@
         self.galleryController.onWallpapersReloadRequested = ^{
             [weakSelf reloadWallpapers];
         };
-
-        // At launch the gallery is always built during a scan, and it has to report
-        // that rather than announcing an empty library.
-        if (self.scanInFlight) [self.galleryController beginScanProgress];
     }
     [self.galleryController showWindow:nil];
     [self.galleryController.window makeKeyAndOrderFront:nil];
@@ -335,22 +394,26 @@
 }
 
 - (void)reloadWallpapers {
+<<<<<<< HEAD
     // Reached before setup ever ran: the user opened Cmd+, from the welcome window and
     // picked a folder there. There is nothing to reload, so this is a first start.
     if (!self.displayManager) {
         self.welcomeController = nil;
         [self startWithConfiguredPath];
         return;
+=======
+    // Replace the asset manager with a fresh instance (unique_ptr cleans up the old one)
+    self.assetManager = [[MacieAssetManagerWrapper alloc] init];
+
+    [self scanWallpaperEngineVideos];
+
+    if (self.galleryController) {
+        [self.galleryController.window close];
+        self.galleryController = nil;
+>>>>>>> origin/main
     }
 
-    // The asset manager is kept, not replaced: -adoptWallpapers swaps the whole list
-    // at once so nothing from the previous folder can survive, and the gallery holds
-    // its own reference to this instance. The wrapper drops a superseded scan's
-    // results itself, so a second reload cannot be overtaken by the first.
-    //
-    // The window also stays open and re-enters its scanning state. Closing and
-    // rebuilding it was only ever a way to force a reload.
-    [self beginWallpaperScan];
+    [self playFirstAvailableVideo];
 }
 
 #pragma mark - Menu Bar
